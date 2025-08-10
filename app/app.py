@@ -11,6 +11,7 @@ from datetime import datetime   # <-- added so datetime.now() works
 from nfl_model.feature_engineering import compute_targets, build_features
 from nfl_model.modeling import train_ats, train_ml, train_totals
 from nfl_model.utils import moneyline_to_prob, edge_to_confidence, pick_text
+from nfl_model.odds_api import fetch_upcoming_odds
 
 st.set_page_config(page_title="NFL Model", layout="wide")
 
@@ -25,8 +26,29 @@ def load_data():
     return df_games, df_odds
 
 def refresh_pipeline(cfg):
-    games, odds = load_data()
-    df = compute_targets(games, odds)
+games, odds = load_data()
+
+if st.session_state.get("use_live_odds", False):
+    live = None
+    try:
+        live = fetch_upcoming_odds()
+    except Exception as e:
+        st.warning(f"Live odds fetch failed: {e}")
+    if live is not None and not live.empty:
+        live = live.rename(columns={
+            "spread_close_home_consensus": "spread_close_home",
+            "total_close_consensus": "total_close",
+            "ml_home_consensus": "ml_home",
+            "ml_away_consensus": "ml_away",
+        })
+        odds = live[[
+            "home_team", "away_team",
+            "spread_close_home", "total_close",
+            "ml_home", "ml_away", "commence_time"
+        ]]
+
+df = compute_targets(games, odds)
+
     df, feats = build_features(df)
 
     # Train simple baselines
@@ -103,6 +125,13 @@ cfg = load_config()
 
 st.title("🏈 NFL Betting Model (Starter)")
 st.caption("Baseline demo with mock data. Replace with real feeds and retrain via the Refresh button.")
+
+use_live = st.toggle(
+    "Use LIVE odds (consensus)",
+    value=False,
+    help="Fetch odds from your configured API"
+)
+st.session_state["use_live_odds"] = use_live
 
 if st.button("🔄 Refresh (rebuild features → retrain → score)"):
     st.session_state["last_run"] = "running"

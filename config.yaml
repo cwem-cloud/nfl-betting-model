@@ -1,0 +1,32 @@
+data:
+  windows: [4, 8, 16]
+  min_games_for_feature: 4
+  decay_alpha: 0.85
+
+model:
+  ats:
+    type: "xgboost"
+    objective: "binary:logistic"
+    max_depth: 4
+    n_estimators: 400
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+  ml:
+    type: "logreg"
+    C: 1.0
+  totals:
+    type: "lightgbm"
+    objective: "regression"
+    num_leaves: 31
+    n_estimators: 500
+    learning_rate: 0.05
+
+betting:
+  min_edge_points: 1.5     # ATS/Totals: model line vs market line
+  min_edge_prob: 0.03      # ML: probability EV threshold
+  confidence_floor: 6
+  kelly_fraction: 0.5
+
+app:
+  default_min_confidence: 6

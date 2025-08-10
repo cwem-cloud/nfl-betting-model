@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yaml
-from pathlib import Path
+from datetime import datetime   # <-- added so datetime.now() works
 
 from nfl_model.feature_engineering import compute_targets, build_features
 from nfl_model.modeling import train_ats, train_ml, train_totals

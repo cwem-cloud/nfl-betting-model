@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/geocode_cache.json
+data/matrix_cache.json
+.pytest_cache/

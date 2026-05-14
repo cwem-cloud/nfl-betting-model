@@ -98,11 +98,14 @@ class Geocoder:
             "size": 1,
             "boundary.country": "US",
         }
+        headers = {"Authorization": self.api_key}
         backoff = 2
         last_exc: Exception = GeocoderError("no attempts made")
         for attempt in range(retries):
             try:
-                resp = requests.get(ORS_GEOCODE_URL, params=params, timeout=10)
+                resp = requests.get(
+                    ORS_GEOCODE_URL, params=params, headers=headers, timeout=10
+                )
                 if resp.status_code == 429:
                     # Rate limited – back off and retry
                     time.sleep(backoff)

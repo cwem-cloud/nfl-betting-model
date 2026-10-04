@@ -85,11 +85,23 @@ boards = Table(
 )
 
 
+def normalize_pg_url(url: str) -> str:
+    """Accept any Postgres URL form (postgres://, postgresql://, postgresql+psycopg2://, a pasted
+    `psql '...'` line) and route it to the psycopg 3 driver we ship."""
+    url = url.strip().strip("'\"")
+    if url.startswith("psql "):
+        url = url[5:].strip().strip("'\"")
+    scheme, sep, rest = url.partition("://")
+    if sep and scheme.split("+")[0] in ("postgres", "postgresql"):
+        return f"postgresql+psycopg://{rest}"
+    return url
+
+
 @lru_cache(maxsize=1)
 def engine():
     url = secret("DATABASE_URL")
     if url:
-        url = url.replace("postgres://", "postgresql://", 1)
+        url = normalize_pg_url(url)
     else:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         url = f"sqlite:///{DATA_DIR / 'pocket_capper.db'}"

@@ -4,7 +4,7 @@ name: diagnose
 # Runs on pushes to diag/* branches, or manually from the Actions tab.
 on:
   push:
-    branches: ["diag/**", "claude/live-diagnostics"]
+    branches: ["diag/**"]
   workflow_dispatch:
 
 jobs:

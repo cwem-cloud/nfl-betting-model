@@ -1,32 +1,95 @@
-data:
-  windows: [4, 8, 16]
-  min_games_for_feature: 4
-  decay_alpha: 0.85
+# Pocket Capper configuration. Everything tunable lives here.
 
-model:
-  ats:
-    type: "xgboost"
-    objective: "binary:logistic"
-    max_depth: 4
-    n_estimators: 400
-    learning_rate: 0.05
-    subsample: 0.8
-    colsample_bytree: 0.8
-  ml:
-    type: "logreg"
-    C: 1.0
-  totals:
-    type: "lightgbm"
-    objective: "regression"
-    num_leaves: 31
-    n_estimators: 500
-    learning_rate: 0.05
+books:
+  primary: draftkings            # the book picks are priced/graded against
+  # Odds API bookmaker keys. <=10 books costs the same as 1 region.
+  compare: [draftkings, fanduel, betmgm, williamhill_us, espnbet, betrivers, fanatics, pinnacle, lowvig, betonlineag]
+  sharp: [pinnacle, lowvig, betonlineag]   # used as the "sharp" fair-price reference
 
-betting:
-  min_edge_points: 1.5     # ATS/Totals: model line vs market line
-  min_edge_prob: 0.03      # ML: probability EV threshold
-  confidence_floor: 6
-  kelly_fraction: 0.5
+sports:
+  nfl:
+    odds_key: americanfootball_nfl
+    # Blind ratings model (ridge on points; opponent adjusted; recency decayed)
+    decay_half_life_weeks: 8
+    prior_season_weight: 0.8      # extra discount on last season's games
+    ridge_alpha: 3.0
+    epa_blend: 0.45               # weight of EPA-implied points vs raw points in the target
+    hfa_points: 1.6               # fallback home-field edge if not fitted
+    home_edge_adjust: 0.5         # added to the fitted HFA; see backtest residuals
+    margin_sigma: 13.2
+    total_sigma: 13.3
+    # Starting QB ruled out: points lost = base + per_epa * starter's EPA/play (fit on 561 games, 2020-25)
+    qb_out_base: 2.2
+    qb_out_per_epa: 9.8
+    qb_out_cap: 7.0
+    skill_out_points: 1.25        # per featured WR1/TE/lead RB ruled out (measured ~1.5-1.8; market partly prices it)
+    skill_out_cap: 3.0
+    rest_points_per_day: 0.15
+    wind_threshold_mph: 8
+    wind_total_per_mph: -0.35     # per mph above the threshold
+    wind_total_cap: -6.0
+    cold_total_below_25f: -3.0
+    precip_total: -1.2
+    dome_total: 2.0               # domes/closed roofs score more than the all-venue ratings imply
+    # Blend between blind model probability and de-vigged sharp market probability.
+    # The blind number is formed first; this weight only controls how much we trust it vs the market for sizing.
+    # Walk-forward 2023-25: blind MAE 10.33 vs closing line 9.81 on sides, 10.33 vs 10.11 on totals,
+    # so the model earns a modest weight (more on totals, where it showed signal).
+    model_weight_side: 0.20
+    model_weight_total: 0.30
+  cfb:
+    odds_key: americanfootball_ncaaf
+    decay_half_life_weeks: 6
+    prior_season_weight: 0.35
+    ridge_alpha: 3.0
+    ppa_blend: 0.35
+    hfa_points: 2.4
+    margin_sigma: 15.5
+    total_sigma: 15.0
+    model_weight_side: 0.30
+    model_weight_total: 0.35
 
-app:
-  default_min_confidence: 6
+edges:
+  min_ev_side: 0.025          # +2.5% expected value at the DK price
+  min_ev_total: 0.025
+  min_ev_ml: 0.03
+  min_points_side: 1.0        # blind line must differ from DK line by at least this many points
+  min_points_total: 1.5
+  min_ev_prop: 0.04
+  min_ev_attd: 0.05
+  max_attd_odds: 600          # ignore longshots beyond +600 in the TD Zone
+  min_prop_edge_pct: 0.06     # projection vs line, relative
+  # Sanity guards: a huge model-vs-market gap usually means the model is missing news
+  # (injury, QB change, weather) - those games are flagged, not bet.
+  max_points_side: 6.0
+  max_points_total: 7.0
+  ml_price_min: -200
+  ml_price_max: 250
+  max_prop_edge_pct: 0.35     # projection > 35% off the line usually means a role/injury change we missed
+  max_prop_plays: 12          # per run, best EV first
+  max_attd_plays: 8
+  max_plays_per_game_props: 3 # limits correlated exposure in one game
+
+units:
+  kelly_fraction: 0.25
+  unit_pct_bankroll: 1.0      # 1U = 1% of bankroll
+  min_units: 0.5
+  max_units: 3.0
+  max_units_prop: 1.5
+  max_units_attd: 0.5
+  sharp_signal_bonus: 0.25    # units added/removed per net agreeing/disagreeing sharp signal (capped)
+
+sharp:
+  money_vs_bets_gap: 10       # money% - bets% >= this flags a sharp side
+  rlm_bets_pct: 60            # public side >= this, but line moved the other way
+  steam_points: 1.0           # move of >= 1 pt in one snapshot interval at >= 3 books
+  steam_books: 3
+  stale_dk_points: 0.5        # DK differs from sharp consensus by >= this
+
+props:
+  nfl_markets: [player_pass_yds, player_pass_tds, player_pass_attempts, player_rush_yds, player_rush_attempts, player_receptions, player_reception_yds, player_anytime_td]
+  min_games: 2
+
+run:
+  lookahead_days: 7
+  claude_model: claude-opus-5-5   # only used when ANTHROPIC_API_KEY is set

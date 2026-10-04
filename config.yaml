@@ -96,7 +96,7 @@ props:
     rec_yds: 0.20
     receptions: 0.20
     rush_yds: 0.20
-    rush_att: 0.20
+    rush_att: 0.15
     pass_yds: 0.08
     pass_att: 0.08
     pass_tds: 0.05

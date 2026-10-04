@@ -80,17 +80,28 @@ def parse_dk_splits_html(html: str, sport: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SPLIT_COLS)
 
 
-def fetch_dk_splits(sport: str) -> pd.DataFrame:
-    try:
-        r = SESSION.get(
-            DK_SPLITS_URL,
-            params={"tb_eg": DK_EVENT_GROUPS[sport], "tb_edate": "n7days", "tb_emt": "0"},
-            timeout=30,
-        )
-        r.raise_for_status()
-        return parse_dk_splits_html(r.text, sport)
-    except Exception:
-        return pd.DataFrame(columns=SPLIT_COLS)
+def fetch_dk_splits(sport: str, max_pages: int = 8) -> pd.DataFrame:
+    """All pages of the DK Network splits table (10 games per page, `tb_page` param)."""
+    frames, seen = [], set()
+    for page in range(1, max_pages + 1):
+        try:
+            r = SESSION.get(
+                DK_SPLITS_URL,
+                params={"tb_eg": DK_EVENT_GROUPS[sport], "tb_edate": "n7days", "tb_emt": "0", "tb_page": page},
+                timeout=30,
+            )
+            r.raise_for_status()
+        except Exception:
+            break
+        df = parse_dk_splits_html(r.text, sport)
+        games = set(zip(df["away"], df["home"])) if len(df) else set()
+        if not games or games <= seen:  # past the last page (some sites repeat the final page)
+            break
+        frames.append(df[[g not in seen for g in zip(df["away"], df["home"])]])
+        seen |= games
+        if f"tb_page={page + 1}" not in r.text.replace("&#038;", "&"):
+            break
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SPLIT_COLS)
 
 
 def parse_manual_csv(text: str, source: str = "manual") -> pd.DataFrame:

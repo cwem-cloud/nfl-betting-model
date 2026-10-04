@@ -97,3 +97,28 @@ def test_dk_splits_live_layout():
     assert (r.loc[("spread", "away"), "money_pct"], r.loc[("spread", "away"), "bets_pct"]) == (20, 29)
     assert r.loc[("total", "under"), "money_pct"] == 65
     assert set(df["away"]) == {"NE Patriots"} and set(df["home"]) == {"BUF Bills"}
+
+
+def test_dk_splits_pagination(monkeypatch):
+    from pathlib import Path
+
+    page1 = (Path(__file__).parent / "fixtures" / "dk_splits_sample.html").read_text() + '<a href="?tb_eg=88808&#038;tb_page=2">2</a>'
+    page2 = page1.replace("NE Patriots", "MIA Dolphins").replace("BUF Bills", "NYJ Jets").replace("tb_page=2", "tb_page=1")
+    calls = []
+
+    class Resp:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    def fake_get(url, params, timeout):
+        calls.append(params["tb_page"])
+        return Resp({1: page1, 2: page2}.get(params["tb_page"], page2))
+
+    monkeypatch.setattr(splits.SESSION, "get", fake_get)
+    df = splits.fetch_dk_splits("nfl")
+    assert calls == [1, 2]
+    assert set(zip(df["away"], df["home"])) == {("NE Patriots", "BUF Bills"), ("MIA Dolphins", "NYJ Jets")}
+    assert len(df) == 12

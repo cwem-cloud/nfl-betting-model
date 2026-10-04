@@ -409,6 +409,21 @@ with tabs[6]:
                                                 Units=("profit_units", "sum"), Risked=("units", "sum"))
             by["ROI"] = (by["Units"] / by["Risked"]).map(lambda x: f"{x:+.1%}")
             st.dataframe(by.round(2), width="stretch")
+            # Which signals actually earn? One row per (pick, agreeing signal).
+            sig_rows = []
+            for r in graded.itertuples():
+                for sg in json.loads(r.signals) if isinstance(r.signals, str) and r.signals else []:
+                    if sg["direction"] > 0:
+                        sig_rows.append({"Signal": sg["name"].split(":")[0], "win": r.status == "win",
+                                         "units": r.profit_units, "risked": r.units, "clv": r.clv_prob})
+            if sig_rows:
+                sdf = pd.DataFrame(sig_rows).groupby("Signal").agg(
+                    Plays=("win", "size"), WinPct=("win", "mean"), Units=("units", "sum"),
+                    Risked=("risked", "sum"), AvgCLV=("clv", "mean"))
+                sdf["ROI"] = sdf["Units"] / sdf["Risked"]
+                st.markdown("**By supporting signal**")
+                st.dataframe(sdf.drop(columns="Risked").style.format(
+                    {"WinPct": "{:.0%}", "Units": "{:+.2f}", "AvgCLV": "{:+.1%}", "ROI": "{:+.1%}"}), width="stretch")
         show = d.sort_values("kickoff_dt", ascending=False)
         st.dataframe(pd.DataFrame({
             "Kickoff": show["kickoff_dt"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d %I:%M %p"),

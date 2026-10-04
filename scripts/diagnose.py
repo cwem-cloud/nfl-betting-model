@@ -103,16 +103,23 @@ def wx():
 
 def dk_splits():
     section("DK NETWORK SPLITS")
-    r = splits.SESSION.get(splits.DK_SPLITS_URL, params={"tb_eg": splits.DK_EVENT_GROUPS["nfl"], "tb_edate": "n7days", "tb_emt": "0"}, timeout=30)
-    print("status", r.status_code, "bytes", len(r.text))
-    html = r.text
-    classes = re.findall(r'class="([^"]*tb[^"]*)"', html)
-    print("tb* classes:", pd.Series(classes).value_counts().head(30).to_dict())
-    i = html.find("%")
-    j = html.find("tb-sodd")
-    k = html.rfind("<div", 0, max(0, j - 3000))
-    print("HTML around first tb-sodd:\n", html[k: j + 6000])
-    print("parsed rows:", len(splits.parse_dk_splits_html(html, "nfl")))
+    for sport in ("nfl", "cfb"):
+        r = splits.SESSION.get(splits.DK_SPLITS_URL, params={"tb_eg": splits.DK_EVENT_GROUPS[sport], "tb_edate": "n7days", "tb_emt": "0"}, timeout=30)
+        html = r.text
+        df = splits.parse_dk_splits_html(html, sport)
+        games = df.drop_duplicates(["away", "home"]) if len(df) else df
+        blocks = html.count('class="tb-se ')
+        print(f"{sport}: status {r.status_code}, tb-se blocks {blocks}, parsed rows {len(df)}, games {len(games)}")
+        links = sorted(set(re.findall(r'href="(https://dknetwork[^"]*betting-splits/\?[^"]*)"', html)))
+        print("splits links:", [l.replace("&#038;", "&") for l in links][:40])
+        if len(df):
+            print(df.head(12).to_string())
+            if sport == "nfl":
+                from pocket_capper.engine.slate import _nfl_split_name
+                print("unmatched NFL split names:", sorted({n for n in set(df["away"]) | set(df["home"]) if not _nfl_split_name(n)}))
+            else:
+                fbs = cfbd.fbs_teams(2026)
+                print("unmatched CFB split names:", sorted({n for n in set(df["away"]) | set(df["home"]) if not teams.match_cfb(n, fbs)}))
 
 
 def cfb_backtest():

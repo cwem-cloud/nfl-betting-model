@@ -84,3 +84,16 @@ def test_postgres_url_forms():
     # the driver is installed and SQLAlchemy can build an engine for it (no connection is made)
     assert create_engine(want).dialect.driver == "psycopg"
     assert normalize_pg_url("sqlite:///x.db") == "sqlite:///x.db"
+
+
+def test_dk_splits_live_layout():
+    from pathlib import Path
+
+    html = (Path(__file__).parent / "fixtures" / "dk_splits_sample.html").read_text()
+    df = splits.parse_dk_splits_html(html, "nfl")
+    assert len(df) == 6
+    r = df.set_index(["market", "side"])
+    assert (r.loc[("ml", "home"), "money_pct"], r.loc[("ml", "home"), "bets_pct"]) == (61, 80)
+    assert (r.loc[("spread", "away"), "money_pct"], r.loc[("spread", "away"), "bets_pct"]) == (20, 29)
+    assert r.loc[("total", "under"), "money_pct"] == 65
+    assert set(df["away"]) == {"NE Patriots"} and set(df["home"]) == {"BUF Bills"}

@@ -234,6 +234,16 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
 
 # ------------------------------------------------------------------ NFL
 
+_NFL_NICK = {k.split()[-1].lower(): v for k, v in teams.NFL_NAME_TO_ABBR.items()}
+
+
+def _nfl_split_name(s) -> str | None:
+    """'NE Patriots' / 'New England Patriots' / 'NE' -> 'NE'."""
+    s = str(s or "").strip()
+    if not s:
+        return None
+    return teams.nfl_abbr(s) or _NFL_NICK.get(s.split()[-1].lower())
+
 def run_nfl(run_id, cfg, log, now, include_props) -> int:
     ncfg = cfg["sports"]["nfl"]
     sched = nflverse.schedules()
@@ -279,11 +289,7 @@ def run_nfl(run_id, cfg, log, now, include_props) -> int:
         m = odds_df[(odds_df["home_name"].map(teams.nfl_abbr) == g["home"]) & (odds_df["away_name"].map(teams.nfl_abbr) == g["away"])]
         return m["event_id"].iloc[0] if not m.empty else None
 
-    nick = {k.split()[-1].lower(): v for k, v in teams.NFL_NAME_TO_ABBR.items()}
-
-    def name_of(s):
-        s = str(s)
-        return teams.nfl_abbr(s) or nick.get(s.split()[-1].lower()) if s else None
+    name_of = _nfl_split_name
 
     def trend_fn(g, row):
         out = [trends.team_ats(sched, g["home"], season), trends.team_ats(sched, g["away"], season)]

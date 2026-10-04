@@ -81,6 +81,38 @@ def team_qb_value(player_stats: pd.DataFrame, season: int) -> dict[str, dict]:
     return res
 
 
+def key_skill_players(player_stats: pd.DataFrame, season: int, week: int) -> dict[str, list[dict]]:
+    """Each team's featured skill players this season: WR1 (>=24% targets), TE (>=20%), workhorse RB (>=55% carries)."""
+    need = {"season", "week", "season_type", "player_id", "team", "position", "target_share", "carries"}
+    if player_stats.empty or not need <= set(player_stats.columns):
+        return {}
+    ps = player_stats[(player_stats["season"] == season) & (player_stats["week"] < week)
+                      & (player_stats["season_type"] == "REG") & player_stats["player_id"].notna()]
+    out: dict[str, list[dict]] = {}
+    for team, grp in ps.groupby("team"):
+        if grp["week"].nunique() < 3:
+            continue
+        for pos, thr in (("WR", 0.24), ("TE", 0.20)):
+            p = grp[grp["position"] == pos].groupby(["player_id", "player_display_name"]).agg(
+                share=("target_share", "mean"), games=("week", "nunique")).reset_index()
+            p = p[(p["games"] >= 3) & (p["share"] >= thr)].sort_values("share", ascending=False).head(1)
+            for r in p.itertuples():
+                out.setdefault(team, []).append({"id": r.player_id, "name": r.player_display_name, "role": f"{pos}1"})
+        rb = grp[grp["position"] == "RB"].groupby(["player_id", "player_display_name"])["carries"].sum()
+        if not rb.empty and rb.max() / max(grp["carries"].sum(), 1) >= 0.55:
+            pid, name = rb.idxmax()
+            out.setdefault(team, []).append({"id": pid, "name": name, "role": "lead RB"})
+    return out
+
+
+def out_player_ids(season: int, week: int) -> set[str]:
+    inj = nflverse.injuries(season)
+    if inj.empty:
+        return set()
+    wk = inj[inj["week"] == week]
+    return set(wk[wk["report_status"].isin(OUT_STATUSES)]["gsis_id"])
+
+
 def project_games(
     upcoming: pd.DataFrame,
     ratings: Ratings,
@@ -88,6 +120,8 @@ def project_games(
     qb_flags: dict | None = None,
     qb_values: dict | None = None,
     weather: dict | None = None,
+    key_players: dict | None = None,
+    out_ids: set | None = None,
 ) -> pd.DataFrame:
     """Blind projections. `upcoming` must contain game_id, home, away, neutral, home_rest, away_rest, roof."""
     rows = []
@@ -98,6 +132,16 @@ def project_games(
             hp += cfg["home_edge_adjust"] / 2
             ap -= cfg["home_edge_adjust"] / 2
         notes = []
+        # Featured skill players ruled out (2020-25: WR1/TE1/lead RB absences cost ~1.5-1.8 pts vs model)
+        for side, team in (("home", g["home"]), ("away", g["away"])):
+            missing = [k for k in (key_players or {}).get(team, []) if k["id"] in (out_ids or set())]
+            if missing:
+                hit = min(cfg["skill_out_cap"], cfg["skill_out_points"] * len(missing))
+                if side == "home":
+                    hp -= hit
+                else:
+                    ap -= hit
+                notes.append(f"{team} without " + ", ".join(f"{k['role']} {k['name']}" for k in missing) + f" (-{hit:.1f} pts)")
         # Rest / bye edge
         rest_diff = float(np.nan_to_num(g.get("home_rest", 7)) - np.nan_to_num(g.get("away_rest", 7)))
         rest_diff = float(np.clip(rest_diff, -7, 7))

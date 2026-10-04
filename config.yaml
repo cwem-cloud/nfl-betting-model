@@ -22,6 +22,8 @@ sports:
     qb_out_base: 2.2
     qb_out_per_epa: 9.8
     qb_out_cap: 7.0
+    skill_out_points: 1.25        # per featured WR1/TE/lead RB ruled out (measured ~1.5-1.8; market partly prices it)
+    skill_out_cap: 3.0
     rest_points_per_day: 0.15
     wind_threshold_mph: 8
     wind_total_per_mph: -0.35     # per mph above the threshold

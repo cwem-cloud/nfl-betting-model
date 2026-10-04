@@ -83,6 +83,8 @@ is blended with the de-vigged sharp-book probability, with weights set by the ba
 Adjustments fit on history (nflverse 2020–25), not guessed:
 - **QB out**: 561 games where a team's primary QB didn't start. Points lost ≈ 2.2 + 9.8 × his EPA/play,
   so a ~0.17 EPA/play starter is worth ~4 pts, and swapping out a below-average starter costs almost nothing.
+- **Featured skill player out** (WR1 ≥24% targets, TE ≥20%, lead RB ≥55% carries): measured 1.5–1.8 pts.
+  We apply -1.25 each, capped at -3, because the market already prices part of it.
 - **Wind / roof**: totals fall ~0.35 pts per mph above 8 mph (capped at -6). Domes and closed roofs run +2 over the
   all-venue ratings. Below 25°F, -3.
 - **Home field** is fit unpenalized, plus a +0.5 correction for what EPA-based ratings miss.

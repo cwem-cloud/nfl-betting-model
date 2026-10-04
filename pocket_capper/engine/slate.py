@@ -263,7 +263,8 @@ def run_nfl(run_id, cfg, log, now, include_props) -> int:
     up["neutral"] = up["location"].eq("Neutral")
     # A Monday/Thursday run can span two weeks: injury flags are week-specific.
     projs = pd.concat(
-        [nfl_model.project_games(wk_games, ratings, ncfg, nfl_model.qb_status(season, wk), qb_vals, wx)
+        [nfl_model.project_games(wk_games, ratings, ncfg, nfl_model.qb_status(season, wk), qb_vals, wx,
+                                 nfl_model.key_skill_players(ps, season, wk), nfl_model.out_player_ids(season, wk))
          for wk, wk_games in up.groupby("week")],
         ignore_index=True,
     )
@@ -303,11 +304,7 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
         pd.DataFrame({"team": projs["home"], "opp": projs["away"], "pts": projs["home_pts"], "margin": projs["fair_margin"]}),
         pd.DataFrame({"team": projs["away"], "opp": projs["home"], "pts": projs["away_pts"], "margin": -projs["fair_margin"]}),
     ])
-    inj = nflverse.injuries(season)
-    out_ids = set()
-    if not inj.empty:
-        wk = inj[inj["week"] == week]
-        out_ids = set(wk[wk["report_status"].isin(nfl_model.OUT_STATUSES)]["gsis_id"])
+    out_ids = nfl_model.out_player_ids(season, week)
     plays = nflverse.pbp([season])
     pproj = nfl_props.project_players(ps, plays, season, week, tp, out_ids)
     log(f"Player projections: {len(pproj)} players ({len(out_ids)} ruled out/doubtful removed)")

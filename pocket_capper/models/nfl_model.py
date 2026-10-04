@@ -65,19 +65,25 @@ def qb_status(season: int, week: int) -> dict[str, dict]:
     return out
 
 
-def team_qb_value(player_stats: pd.DataFrame, season: int) -> dict[str, dict]:
-    """Primary QB (most dropbacks this season) and his EPA/play edge over a typical backup."""
-    ps = player_stats[(player_stats["season"] == season) & (player_stats["position"] == "QB")]
+def team_qb_value(player_stats: pd.DataFrame, season: int, shrink_plays: float = 150.0) -> dict[str, dict]:
+    """Primary QB (most attempts this season) and his EPA/play, shrunk toward league-average (0).
+
+    Uses this season plus half-weighted last season, so a starter with a few bad games is not
+    treated as replacement level (which would make his absence look free).
+    """
+    ps = player_stats[player_stats["position"] == "QB"] if "position" in player_stats else player_stats
+    cur = ps[ps["season"] == season]
     res = {}
-    if ps.empty:
+    if cur.empty:
         return res
-    agg = ps.groupby(["team", "player_id", "player_display_name"]).agg(
-        att=("attempts", "sum"), epa=("passing_epa", "sum"), rush_epa=("rushing_epa", "sum")
-    ).reset_index()
-    agg["epa_pp"] = (agg["epa"] + agg["rush_epa"].fillna(0)) / agg["att"].clip(lower=1)
-    for team, grp in agg.groupby("team"):
-        top = grp.sort_values("att", ascending=False).iloc[0]
-        res[team] = {"id": top["player_id"], "name": top["player_display_name"], "epa_pp": float(top["epa_pp"])}
+    for team, grp in cur.groupby("team"):
+        att = grp.groupby(["player_id", "player_display_name"])["attempts"].sum()
+        pid, name = att.idxmax()
+        hist = ps[(ps["player_id"] == pid) & ps["season"].isin([season, season - 1])]
+        w = np.where(hist["season"] == season, 1.0, 0.5)
+        plays = float((hist["attempts"].fillna(0) * w).sum())
+        epa = float(((hist["passing_epa"].fillna(0) + hist["rushing_epa"].fillna(0)) * w).sum())
+        res[team] = {"id": pid, "name": name, "epa_pp": epa / (plays + shrink_plays)}
     return res
 
 

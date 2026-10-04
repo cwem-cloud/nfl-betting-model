@@ -49,6 +49,12 @@ def odds():
                 globals()["CFB_ODDS_NAMES"] = names
         print("usage:", odds_api.LAST_USAGE)
         if sport == "nfl" and len(df):
+            probe(lambda: nfl_props_probe(df))
+
+
+def nfl_props_probe(df):
+    if True:
+        if True:
             section("ODDS API: NFL props (first event)")
             ev = df["event_id"].iloc[0]
             p = odds_api.event_props(cfg["sports"]["nfl"]["odds_key"], ev, cfg["props"]["nfl_markets"], cfg["books"]["compare"])
@@ -103,9 +109,29 @@ def dk_splits():
     classes = re.findall(r'class="([^"]*tb[^"]*)"', html)
     print("tb* classes:", pd.Series(classes).value_counts().head(30).to_dict())
     i = html.find("%")
-    print("first % context:", html[max(0, i - 1500): i + 1500])
+    j = html.find("tb-sodd")
+    k = html.rfind("<div", 0, max(0, j - 3000))
+    print("HTML around first tb-sodd:\n", html[k: j + 6000])
     print("parsed rows:", len(splits.parse_dk_splits_html(html, "nfl")))
 
 
-for f in (odds, cfb, wx, dk_splits):
+def cfb_backtest():
+    section("CFB BACKTEST 2025 (bias check)")
+    from pocket_capper.models import backtest
+
+    bt = backtest.run_cfb([2025], cfg["sports"]["cfb"])
+    print(backtest.summarize(bt))
+    print("margin bias (actual - model):", round((bt["result"] - bt["fair_margin"]).mean(), 2),
+          "total bias (actual - model):", round((bt["total"] - bt["fair_total"]).mean(), 2),
+          "close total bias:", round((bt["total"] - bt["total_line"]).mean(), 2))
+    print("model total - close total:", round((bt["fair_total"] - bt["total_line"]).mean(), 2),
+          "| sd margin resid", round((bt["result"] - bt["fair_margin"]).std(), 2),
+          "| sd total resid", round((bt["total"] - bt["fair_total"]).std(), 2))
+    for w in (0.0, 0.1, 0.2, 0.3, 0.5):
+        m = w * bt["fair_margin"] + (1 - w) * bt["spread_line"]
+        t = w * bt["fair_total"] + (1 - w) * bt["total_line"]
+        print(f"blend w={w}: margin MAE {(m - bt['result']).abs().mean():.3f}  total MAE {(t - bt['total']).abs().mean():.3f}")
+
+
+for f in (odds, cfb, wx, dk_splits, cfb_backtest):
     probe(f)

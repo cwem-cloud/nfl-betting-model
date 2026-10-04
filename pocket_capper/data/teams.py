@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 NFL_NAME_TO_ABBR = {
     "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL", "Buffalo Bills": "BUF",
@@ -42,8 +43,12 @@ def nfl_abbr(name: str) -> str | None:
     return NFL_NAME_TO_ABBR.get(name)
 
 
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
 def _norm(s: str) -> str:
-    s = s.lower().replace("&", "and").replace("state", "st").replace("st.", "st")
+    s = _strip_accents(s).lower().replace("&", "and").replace("state", "st").replace("st.", "st")
     return re.sub(r"[^a-z0-9]", "", s)
 
 
@@ -53,6 +58,8 @@ _CFB_PREFIX_ALIASES = [
     ("centralflorida", "ucf"), ("brighamyoung", "byu"), ("louisianast", "lsu"), ("texaschristian", "tcu"),
     ("connecticut", "uconn"), ("texassanantonio", "utsa"), ("texaselpaso", "utep"),
     ("nevadalasvegas", "unlv"), ("alabamabirmingham", "uab"), ("floridainternational", "fiu"),
+    ("floridaintl", "fiu"), ("floridaintl", "floridainternational"), ("fiu", "floridainternational"),
+    ("umass", "massachusetts"), ("hawaiirainbow", "hawaii"),
 ]
 
 
@@ -62,19 +69,24 @@ def match_cfb(odds_name: str, schools: list[str]) -> str | None:
     Picks the longest school name that the odds name starts with, so 'Miami (OH) RedHawks'
     beats 'Miami' and 'Texas A&M Aggies' beats 'Texas'.
     """
-    on = _norm(odds_name)
-    for src, dst in _CFB_PREFIX_ALIASES:
-        if on.startswith(src):
-            on = dst + on[len(src):]
-            break
-    best, best_len = None, 0
-    for s in schools:
-        sn = _norm(s)
-        if on.startswith(sn) and len(sn) > best_len:
-            best, best_len = s, len(sn)
-    return best
+    raw = _norm(odds_name)
+    aliased = [(dst + raw[len(src):], len(dst)) for src, dst in _CFB_PREFIX_ALIASES if raw.startswith(src)]
+    # An alias exists because the raw name prefix-matches the wrong school ("Louisiana Monroe" -> "Louisiana"),
+    # so an aliased form wins when a school covers the whole alias; the raw form is the fallback.
+    for form, need in aliased + [(raw, 1)]:
+        best, best_len = None, 0
+        for s in schools:
+            sn = _norm(s)
+            if form.startswith(sn) and len(sn) > best_len:
+                best, best_len = s, len(sn)
+        if best and best_len >= need:
+            return best
+    return None
 
 
-def norm_player(name: str) -> str:
+def norm_player(name) -> str:
+    if not isinstance(name, str):
+        return ""
+    name = _strip_accents(name)
     name = re.sub(r"\b(jr|sr|ii|iii|iv|v)\.?$", "", name.strip().lower())
     return re.sub(r"[^a-z]", "", name)

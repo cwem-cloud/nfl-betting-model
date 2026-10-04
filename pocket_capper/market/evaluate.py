@@ -223,6 +223,8 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
                 fair.append(om.devig([y["price"].iloc[0], n["price"].iloc[0]])[0] if not n.empty
                             else om.devig_one_sided(y["price"].iloc[0]))
             p_model = float(pj["anytime_td"])
+            if not fair or not np.isfinite(p_model):
+                continue
             p_mkt = float(np.median(fair))
             p_final = 0.5 * p_model + 0.5 * p_mkt
             ev = om.expected_value(p_final, price)
@@ -245,6 +247,8 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             continue
         line = float(over["point"].iloc[0])
         p_over_model = nfl_props.prob_over(stat, float(mean), line)
+        if not np.isfinite(p_over_model):
+            continue
         fair = []
         for bk, b in grp.groupby("book"):
             o, u = b[(b["side"] == "over") & (b["point"] == line)], b[(b["side"] == "under") & (b["point"] == line)]

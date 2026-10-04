@@ -106,8 +106,8 @@ def venues() -> pd.DataFrame:
             {
                 "venue_id": _g(d, "id"),
                 "name": _g(d, "name"),
-                "lat": _g(loc, "x", "latitude"),
-                "lon": _g(loc, "y", "longitude"),
+                "lat": _g(d, "latitude", default=_g(loc, "x", "latitude")),
+                "lon": _g(d, "longitude", default=_g(loc, "y", "longitude")),
                 "dome": bool(_g(d, "dome", default=False)),
             }
         )

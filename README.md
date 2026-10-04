@@ -1,53 +1,123 @@
+# 🏈 Pocket Capper
 
-# NFL Betting Model Starter
+A NFL + CFB betting model with one button. Hit **Run** and it:
 
-A production-friendly starter repo for an NFL ATS/Totals/Moneyline model with:
-- Weekly "Refresh" workflow (press a button in the Streamlit app).
-- Data layers for games, odds, weather, injuries, and market context.
-- Baseline modeling (logistic for ATS/ML, regression for Totals) with calibration.
-- Picks with **1–10 confidence** + short rationale.
-- Edge filters and basic bankroll logic.
+1. **Handicaps every game blind** (no line) from opponent-adjusted, recency-weighted
+   power ratings, then adjusts for QB injuries, rest, and kickoff weather. Each game gets a fair
+   spread, total and win %, and every NFL skill player gets a stat projection.
+   These numbers are saved **before** any odds are pulled, so the market can't anchor them.
+2. **Pulls the market**: DraftKings plus up to 9 other books (including Pinnacle as the sharp
+   reference), DK Network bet % and money % splits, and line movement from every past snapshot.
+3. **Finds sharp signals**: DK off-market vs sharp books, reverse line movement, big-money
+   vs public-ticket splits, steam moves, and plays you log from sharp sources such as Bambino.
+4. **Prices the edge at DK**: blended win probability, EV, and units from ¼-Kelly
+   adjusted by the sharp signals. Every play gets a rationale explaining how the number was built.
+5. **Tracks everything**: plays are locked at the line first issued. They're auto-graded
+   with closing line value (CLV), and the full history lives in the History tab.
 
-> This is a scaffold with mock data so you can run it immediately. Swap in real sources later.
+No edge, no play. Games where the model and market disagree by an unreasonable amount get
+flagged rather than bet, since that usually means the model is missing news.
 
-## Quickstart
+## Dashboard tabs
+
+| Tab | What's there |
+|---|---|
+| 🏈 NFL / 🎓 CFB | Plays with U rating, EV and rationale, plus the full slate: blind line vs DK vs sharp, adjustments, power ratings |
+| 🎯 TD Zone | Anytime TD: model % (red-zone usage × blind team TD expectation) vs DK odds, fair odds, +EV plays |
+| 📊 Prop Hub | NFL player props: blind projection vs DK line, model/market %, EV, filters |
+| 📈 Line Market | Open → current at DK, sharp line, bet % / money %, all-books grid, movement chart, splits CSV import |
+| 🧠 Sharp Inputs | Log plays from sharp sources. They become signals and get a graded record per source |
+| 📚 History | Every pick ever: record, units, ROI, CLV, cumulative units, breakdown by bet type, rationale lookup, CSV export |
+
+## Setup (about 15 minutes)
+
+1. **Keys**, set as Streamlit secrets or GitHub Actions secrets (see `.streamlit/secrets.toml.example`):
+   - `ODDS_API_KEY`: [the-odds-api.com](https://the-odds-api.com). The **20K-credit plan (~$30/mo)** covers
+     5 runs a week with props plus odds snapshots (≈4–5K credits/month). The free 500 covers game lines only.
+   - `CFBD_API_KEY`: free at [collegefootballdata.com/key](https://collegefootballdata.com/key).
+   - `ANTHROPIC_API_KEY` *(optional)*: Claude writes a short prose rationale on top of the factual bullets.
+   - `DATABASE_URL` *(optional)*: a free Neon or Supabase Postgres. Without it, history lives in
+     `data/pocket_capper.db` (SQLite), and the GitHub Action commits it back after every run.
+2. **Dashboard**: Streamlit Community Cloud → New app → this repo, main file `app/app.py`.
+3. **Schedule**: `.github/workflows/pocket_capper.yml` runs the full slate at 10:15 ET on Mon and Thu–Sun,
+   re-runs Sunday at 11:45 ET after inactives are announced, snapshots odds and splits six times a day Thu–Mon,
+   and does a grading sweep on Tuesday. You can also trigger it manually from the Actions tab.
+
+Run locally:
 
 ```bash
-# 1) Create a fresh env (recommended)
-python -m venv .venv && source .venv/bin/activate  # (Windows: .venv\Scripts\activate)
-
-# 2) Install deps
 pip install -r requirements.txt
-
-# 3) Launch app
-streamlit run app/app.py
+streamlit run app/app.py               # dashboard with the Run button
+python scripts/run_slate.py            # same thing headless
+python scripts/backtest.py             # walk-forward NFL backtest vs closing lines
+python scripts/backtest.py --props 2025
+python -m pytest -q tests
 ```
 
-## Data Expectations (replace mocks later)
+## How the numbers are built
 
-- `data/raw/games/`: historical game-level features (by week).
-- `data/raw/odds/`: opening & closing lines from multiple books.
-- Optional: `data/raw/weather/`, `data/raw/injuries/`, `data/raw/market/` (tickets vs handle).
+**Blind ratings** (`pocket_capper/models/team_ratings.py`): one ridge regression over every team-game:
+`points = μ + OFF[team] + DEF[opp] + HFA`. Games are weighted with an exponential recency decay
+(8-week half-life in the NFL), last season is discounted, and every team is shrunk toward
+league average. The target blends actual points with **EPA-implied points** (NFL, from nflverse
+play-by-play with garbage time removed) or **PPA-implied points** (CFB, from CFBD). That smooths out
+scoreboard noise like pick-sixes and late garbage TDs.
 
-### Suggested Sources (swap in your credentials/pipelines)
-- **Play-by-play & team stats**: nflfastR (SportsDataverse).
-- **Odds history**: The Odds API, Pinnacle, book-specific CSVs or paid feeds.
-- **Weather**: NWS/NOAA/VisualCrossing.
-- **Injuries**: team reports or paid feeds.
-- **Market percentages**: book or aggregators.
+**Key numbers**: margins are scored with a discrete distribution reweighted by real NFL
+final-margin frequencies from 2002–2025, so 3 and 7 carry their true weight, and push
+probability on -3 is priced.
 
-## Modeling Notes
-- Rolling features (4/8/16 games) with exponential decay.
-- QB/Coach adjustments; opponent-adjusted EPA/SR; trench metrics.
-- Market features: open→close movement, price dispersion, key numbers.
-- Walk-forward validation by week; calibration with Platt/Isotonic.
-- Metrics: ROI, CLV vs close, Brier/log loss, calibration curve.
+**Blending with the market**: the blind number always comes first. For sizing, its win probability
+is blended with the de-vigged sharp-book probability, with weights set by the backtest:
 
-## App Features
-- Refresh button to (re)build features → fit → score next slate.
-- Picks table with implied edge, confidence 1–10, and rationale text.
-- Filters: min edge, bet type (ATS/ML/Totals), and book.
+| Walk-forward 2023–25 (768 games) | Blind model | Closing line |
+|---|---|---|
+| Margin MAE | 10.33 | 9.81 |
+| Total MAE | 10.33 | 10.11 |
+| O/U hit rate when model ≥3 pts off close | 100-86 (53.8%) | |
+| ATS hit rate when model ≥2 pts off close | 164-189 (46.5%) | |
 
----
+Read it honestly: **the closing line beats any public-data model on sides.** So sides use
+a small model weight (0.20), and the edge there comes mostly from DK lagging the sharp books and
+from sharp signals. Totals showed real signal, so they get more weight (0.30). The weights live in
+`config.yaml` so you can retune them as CLV data builds up.
 
-**Disclaimer:** For educational use only. No guarantee of profitability. Bet responsibly.
+**Props / TD Zone** (`pocket_capper/models/nfl_props.py`): team volume (pass attempts and carries,
+adjusted for the blind game script) × player share (decay-weighted targets and carries, with
+injured players' share redistributed) × efficiency (shrunk to position priors) × opponent
+adjustment. Distributions are gamma for yards and Poisson or negative binomial for counts. The anytime-TD
+probability is λ = blind team TDs × player TD share (red-zone opportunity share, overall share,
+actual TD share), then logistic-recalibrated on 2025 outcomes. That calibration is in-sample, so watch the
+TD Zone's CLV and record as 2026 data comes in.
+
+**Units**: ¼-Kelly on the blended edge, ±0.25U per net agreeing or disagreeing sharp signal.
+Sides and totals are capped at 0.5–3U, props at 1.5U, ATTD at 0.5U. Props are capped at 12 a run, ATTD at 8, and 3 per game.
+Spread and ML on the same team are treated as one bet (only the better one is played).
+
+**Trends** (ATS records by situation since 2012) are shown with sample sizes **as context
+only**. They never move the number.
+
+## About sharp sources and paid sites
+
+Action Network Pro and SportsLine have no API, and scraping a logged-in account breaks their ToS.
+Instead:
+- Log sharp plays (e.g. Bambino) in **🧠 Sharp Inputs**. They feed the signals and get their own record.
+- Export or copy splits from Action into a CSV and import them in **📈 Line Market**.
+- DK's own bet % and money % come from the public DK Network splits page. That parser is best-effort: if
+  DK changes the page, it returns nothing rather than breaking the run.
+
+## Layout
+
+```
+pocket_capper/
+  data/      nflverse, CFBD, Odds API, Open-Meteo weather, splits, team-name matching
+  models/    ratings, NFL/CFB blind models, props, key-number distributions, trends, backtests
+  market/    odds math, sharp signals & movement, edge evaluation
+  engine/    run orchestration, rationale, grading + CLV
+  db.py      SQLite/Postgres: runs, projections, odds_snapshots, splits, sharp_plays, picks, boards
+app/app.py   Streamlit dashboard
+scripts/     run_slate, snapshot_odds, grade, backtest
+```
+
+Bet responsibly. This is a decision-support tool, and every model loses some weeks. Judge it on CLV and
+results over hundreds of plays, not one Sunday.

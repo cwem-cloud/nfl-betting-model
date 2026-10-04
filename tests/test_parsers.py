@@ -65,3 +65,22 @@ def test_snapshots_store_only_changes(tmp_db):
     # line moves: both sides stored
     assert tmp_db.insert_snapshots(snap_rows("2026-10-01T18:00:00+00:00", -3.5, -110)) == 2
     assert len(tmp_db.read(tmp_db.odds_snapshots)) == 4
+
+
+def test_postgres_url_forms():
+    from sqlalchemy import create_engine
+
+    from pocket_capper.db import normalize_pg_url
+
+    want = "postgresql+psycopg://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require"
+    for given in (
+        "postgresql://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require",
+        "postgres://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require",
+        "postgresql+psycopg2://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require",
+        "psql 'postgresql://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require'",
+        '  "postgresql://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require" ',
+    ):
+        assert normalize_pg_url(given) == want
+    # the driver is installed and SQLAlchemy can build an engine for it (no connection is made)
+    assert create_engine(want).dialect.driver == "psycopg"
+    assert normalize_pg_url("sqlite:///x.db") == "sqlite:///x.db"

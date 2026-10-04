@@ -1,6 +1,8 @@
 """NFL historical + current-season data from nflverse (free, updated nightly in season)."""
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 
 from pocket_capper.data.http import cached_download
@@ -12,6 +14,14 @@ PBP_COLS = [
     "play_type", "epa", "success", "yardline_100", "pass_attempt", "rush_attempt", "qb_dropback",
     "rusher_player_id", "receiver_player_id", "passer_player_id", "touchdown", "td_player_id",
     "wp", "qtr", "half_seconds_remaining", "score_differential", "two_point_attempt",
+]
+
+
+PS_COLS = [
+    "player_id", "player_display_name", "position", "season", "week", "season_type", "game_id", "team",
+    "opponent_team", "completions", "attempts", "passing_yards", "passing_tds", "passing_epa", "carries",
+    "rushing_yards", "rushing_tds", "rushing_epa", "receptions", "targets", "receiving_yards", "receiving_tds",
+    "target_share",
 ]
 
 
@@ -31,8 +41,10 @@ def pbp(seasons: list[int]) -> pd.DataFrame:
             path = cached_download(f"{BASE}/pbp/play_by_play_{s}.parquet", f"nfl_pbp_{s}.parquet", age)
         except Exception:
             continue
-        df = pd.read_parquet(path)
-        frames.append(df[[c for c in PBP_COLS if c in df.columns]])
+        import pyarrow.parquet as pq
+
+        cols = [c for c in PBP_COLS if c in pq.read_schema(path).names]
+        frames.append(pd.read_parquet(path, columns=cols))  # ~25 of 370 columns: keeps memory small
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=PBP_COLS)
 
 
@@ -46,7 +58,7 @@ def player_stats(seasons: list[int]) -> pd.DataFrame:
             )
         except Exception:
             continue
-        frames.append(pd.read_parquet(path))
+        frames.append(pd.read_parquet(path, columns=PS_COLS))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -59,18 +71,35 @@ def injuries(season: int) -> pd.DataFrame:
 
 
 def team_game_epa(seasons: list[int]) -> pd.DataFrame:
-    """Per team-game offensive EPA totals/plays (non-garbage time), cached small parquet."""
-    plays = pbp(seasons)
-    if plays.empty:
-        return pd.DataFrame()
+    """Per team-game offensive EPA totals/plays (non-garbage time). Cached per season as a tiny parquet,
+    so only the current season's play-by-play is ever loaded into memory."""
+    from pocket_capper.settings import CACHE_DIR
+
+    frames = []
+    for s in seasons:
+        path = CACHE_DIR / f"nfl_tge_{s}.parquet"
+        fresh_hours = 6 if s >= max(seasons) else 24 * 30
+        if path.exists() and (time.time() - path.stat().st_mtime) < fresh_hours * 3600:
+            frames.append(pd.read_parquet(path))
+            continue
+        plays = pbp([s])
+        if plays.empty:
+            continue
+        agg = _aggregate_epa(plays)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        agg.to_parquet(path)
+        frames.append(agg)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _aggregate_epa(plays: pd.DataFrame) -> pd.DataFrame:
     p = plays[plays["play_type"].isin(["pass", "run"]) & plays["epa"].notna()]
     p = p[p.get("two_point_attempt", 0).fillna(0) == 0]
     # drop garbage time: win prob outside 5-95% in the 4th quarter
     garbage = (p["qtr"] >= 4) & ((p["wp"] < 0.05) | (p["wp"] > 0.95))
     p = p[~garbage]
-    agg = (
+    return (
         p.groupby(["game_id", "season", "week", "posteam", "defteam"])
         .agg(off_epa=("epa", "sum"), plays=("epa", "size"), success=("success", "mean"))
         .reset_index()
     )
-    return agg

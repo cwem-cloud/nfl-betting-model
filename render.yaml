@@ -1,0 +1,17 @@
+# Render Blueprint: New -> Blueprint -> pick this repo. Fill the secrets when prompted.
+services:
+  - type: web
+    name: pocket-capper
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: ODDS_API_KEY
+        sync: false
+      - key: CFBD_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

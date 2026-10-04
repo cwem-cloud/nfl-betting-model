@@ -184,6 +184,27 @@ def evaluate_game(
 
 # ---------------------------------------------------------------- props
 
+def _logit(p: float) -> float:
+    p = min(max(p, 1e-4), 1 - 1e-4)
+    return float(np.log(p / (1 - p)))
+
+
+def _logistic(z: float) -> float:
+    return float(1 / (1 + np.exp(-z)))
+
+
+def _implied_mean(stat: str, line: float, p_over: float) -> float:
+    """Mean of our stat distribution that reproduces the market's de-vigged P(over line)."""
+    lo, hi = 1e-3, max(5.0, line * 4 + 10)
+    for _ in range(50):
+        mid = (lo + hi) / 2
+        if nfl_props.prob_over(stat, mid, line) < p_over:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """One row per (player, market) DK offer with projection, probabilities and EV."""
     from pocket_capper.data.teams import norm_player
@@ -192,6 +213,7 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
         return pd.DataFrame()
     primary = cfg["books"]["primary"]
     edges = cfg["edges"]
+    pcfg = cfg["props"]
     board = props_snap.sort_values("fetched_at").groupby(
         ["event_id", "book", "market", "player", "side"], as_index=False
     ).last()
@@ -221,10 +243,14 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
                 if y.empty:
                     continue
                 fair.append(om.devig([y["price"].iloc[0], n["price"].iloc[0]])[0] if not n.empty
-                            else om.devig_one_sided(y["price"].iloc[0]))
+                            else om.devig_one_sided(y["price"].iloc[0], pcfg["attd_one_sided_hold"]))
             p_model = float(pj["anytime_td"])
+            if not fair or not np.isfinite(p_model):
+                continue
             p_mkt = float(np.median(fair))
-            p_final = 0.5 * p_model + 0.5 * p_mkt
+            # market-anchored: move from the market's log-odds part of the way toward the model's
+            k = pcfg["model_weight"]["anytime_td"]
+            p_final = _logistic(_logit(p_mkt) + k * (_logit(p_model) - _logit(p_mkt)))
             ev = om.expected_value(p_final, price)
             qualifies = ev >= edges["min_ev_attd"] and price <= edges["max_attd_odds"]
             rows.append({
@@ -244,20 +270,29 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
         if over.empty or under.empty:
             continue
         line = float(over["point"].iloc[0])
+        if line < pcfg["min_line"].get(stat, 0):
+            continue  # e.g. QB 0.5 rush-yard lines: driven by kneels/scrambles our model can't see
         p_over_model = nfl_props.prob_over(stat, float(mean), line)
+        if not np.isfinite(p_over_model):
+            continue
         fair = []
         for bk, b in grp.groupby("book"):
             o, u = b[(b["side"] == "over") & (b["point"] == line)], b[(b["side"] == "under") & (b["point"] == line)]
             if not o.empty and not u.empty:
                 fair.append(om.devig([o["price"].iloc[0], u["price"].iloc[0]])[0])
-        p_over_mkt = float(np.median(fair)) if fair else p_over_model
-        w = 0.5
+        if not fair:
+            continue
+        p_over_mkt = float(np.median(fair))
+        # Market-anchored: back out the mean the market implies, move it part of the way toward our
+        # projection (weight = how predictive that stat's projection proved), then re-price the line.
+        m_mkt = _implied_mean(stat, line, p_over_mkt)
+        k = pcfg["model_weight"].get(stat, 0.15)
+        p_over_final = nfl_props.prob_over(stat, m_mkt + k * (float(mean) - m_mkt), line)
         best = None
-        for side, pm_, pk_, price in (
-            ("over", p_over_model, p_over_mkt, float(over["price"].iloc[0])),
-            ("under", 1 - p_over_model, 1 - p_over_mkt, float(under["price"].iloc[0])),
+        for side, pm_, pk_, pf, price in (
+            ("over", p_over_model, p_over_mkt, p_over_final, float(over["price"].iloc[0])),
+            ("under", 1 - p_over_model, 1 - p_over_mkt, 1 - p_over_final, float(under["price"].iloc[0])),
         ):
-            pf = w * pm_ + (1 - w) * pk_
             ev = om.expected_value(pf, price)
             cand = (ev, side, pm_, pk_, pf, price)
             best = cand if best is None or ev > best[0] else best

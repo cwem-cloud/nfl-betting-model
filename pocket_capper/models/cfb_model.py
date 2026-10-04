@@ -69,6 +69,8 @@ def project_games(upcoming: pd.DataFrame, ratings: Ratings, cfg: dict, weather: 
     rows = []
     for _, g in upcoming.iterrows():
         hp, ap = ratings.project(g["home"], g["away"], bool(g.get("neutral", False)))
+        hp += cfg.get("total_adjust", 0.0) / 2
+        ap += cfg.get("total_adjust", 0.0) / 2
         notes = []
         wx = (weather or {}).get(g["game_id"])
         if wx and not wx.get("dome"):

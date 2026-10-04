@@ -23,6 +23,9 @@ VOLUME_CAL = {"rec_yds": 1.10, "receptions": 1.10, "rush_yds": 1.10, "rush_att":
 # Anytime-TD logistic recalibration: logit(p) -> a + b*logit(p) (raw model was overconfident at the top).
 ATTD_CAL = (-0.176, 0.729)
 TDS_PER_POINT = 0.108
+# Count stats are overdispersed vs Poisson once projection error is included (2025 walk-forward):
+# var = m + a*m^2 with a = 0.15 receptions, 0.19 rush attempts, 0.03 pass TDs.
+NB_DISPERSION = {"receptions": 0.15, "rush_att": 0.19, "pass_tds": 0.03}
 
 MARKET_STAT = {
     "player_pass_yds": "pass_yds", "player_pass_tds": "pass_tds", "player_pass_attempts": "pass_att",
@@ -184,12 +187,10 @@ def prob_over(stat: str, mean: float, line: float) -> float:
         cv = CV[stat]
         k = 1 / cv**2
         return float(stats.gamma.sf(line, a=k, scale=mean / k))
-    if stat in ("receptions", "pass_tds"):
-        return float(stats.poisson.sf(math.floor(line), mean))
-    if stat == "rush_att":
-        var = mean * 1.6
-        r = mean**2 / max(var - mean, 1e-6)
+    if stat in NB_DISPERSION:
+        # negative binomial with var = m + a*m^2; `a` fit on 2025 projection-vs-actual residuals
+        r = 1 / NB_DISPERSION[stat]
         return float(stats.nbinom.sf(math.floor(line), r, r / (r + mean)))
     if stat == "pass_att":
-        return float(stats.norm.sf(line, mean, 6.5))
+        return float(stats.norm.sf(line, mean, math.sqrt(mean + 0.057 * mean**2)))
     return float("nan")

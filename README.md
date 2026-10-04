@@ -102,10 +102,19 @@ from sharp signals. Totals showed real signal, so they get more weight (0.30). T
 **Props / TD Zone** (`pocket_capper/models/nfl_props.py`): team volume (pass attempts and carries,
 adjusted for the blind game script) × player share (decay-weighted targets and carries, with
 injured players' share redistributed) × efficiency (shrunk to position priors) × opponent
-adjustment. Distributions are gamma for yards and Poisson or negative binomial for counts. The anytime-TD
+adjustment. Distributions are gamma for yards and negative binomial for counts, with spreads fit to 2025
+projection-vs-actual residuals. The anytime-TD
 probability is λ = blind team TDs × player TD share (red-zone opportunity share, overall share,
 actual TD share), then logistic-recalibrated on 2025 outcomes. That calibration is in-sample, so watch the
 TD Zone's CLV and record as 2026 data comes in.
+
+Props are **priced from the market first**. Our projections track the books' lines closely (correlation
+0.88–0.92 for rushing and receiving in live testing), but they're less sharp. So we back out the mean
+the market implies, move it 5–20% of the way toward our projection (the weight depends on how predictive
+that stat proved in 2025), and re-price the DK line. TD props are blended the same way in log-odds (30%).
+
+**CFB** (2025 walk-forward vs CFBD closing lines): margin MAE 12.98 vs 11.87 for the close, total 12.39 vs 12.27.
+College sides lean almost entirely on the market (model weight 0.10) and totals slightly more (0.20).
 
 **Units**: ¼-Kelly on the blended edge, ±0.25U per net agreeing or disagreeing sharp signal.
 Sides and totals are capped at 0.5–3U, props at 1.5U, ATTD at 0.5U. Props are capped at 12 a run, ATTD at 8, and 3 per game.
@@ -120,8 +129,16 @@ Action Network Pro and SportsLine have no API, and scraping a logged-in account 
 Instead:
 - Log sharp plays (e.g. Bambino) in **🧠 Sharp Inputs**. They feed the signals and get their own record.
 - Export or copy splits from Action into a CSV and import them in **📈 Line Market**.
-- DK's own bet % and money % come from the public DK Network splits page. That parser is best-effort: if
-  DK changes the page, it returns nothing rather than breaking the run.
+- DK's own bet % and money % come from the public DK Network splits page, all pages, NFL and CFB. The
+  parser was built against the live page. If DK changes the layout it returns nothing rather than
+  breaking the run, and the `diagnose` workflow will show it.
+
+## Live diagnostics
+
+`.github/workflows/diagnose.yml` hits every live source with your keys: Odds API lines and props, CFBD,
+Open-Meteo and DK splits. It reports team and player name-matching gaps, runs a full slate into a
+throwaway database and prints calibration stats. Run it from the Actions tab, or push to any `diag/*`
+branch. It never touches your real history.
 
 ## Layout
 

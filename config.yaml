@@ -44,10 +44,13 @@ sports:
     ridge_alpha: 3.0
     ppa_blend: 0.35
     hfa_points: 2.4
-    margin_sigma: 15.5
-    total_sigma: 15.0
-    model_weight_side: 0.30
-    model_weight_total: 0.35
+    total_adjust: -0.6            # 2025 walk-forward: blind totals ran 0.6 pts high
+    margin_sigma: 16.4            # 2025 residual sd
+    total_sigma: 15.5
+    # 2025 walk-forward vs CFBD closing lines: margin MAE 12.98 vs 11.87, total 12.44 vs 12.27.
+    # Blending showed no gain on sides and a small one on totals (best w = 0.1-0.2).
+    model_weight_side: 0.10
+    model_weight_total: 0.20
 
 edges:
   min_ev_side: 0.025          # +2.5% expected value at the DK price
@@ -56,8 +59,8 @@ edges:
   min_points_side: 1.0        # blind line must differ from DK line by at least this many points
   min_points_total: 1.5
   min_ev_prop: 0.04
-  min_ev_attd: 0.05
-  max_attd_odds: 600          # ignore longshots beyond +600 in the TD Zone
+  min_ev_attd: 0.06
+  max_attd_odds: 450          # longshots carry the most vig and the least reliable model edge
   min_prop_edge_pct: 0.06     # projection vs line, relative
   # Sanity guards: a huge model-vs-market gap usually means the model is missing news
   # (injury, QB change, weather) - those games are flagged, not bet.
@@ -87,6 +90,22 @@ sharp:
   stale_dk_points: 0.5        # DK differs from sharp consensus by >= this
 
 props:
+  # Market-anchored weights: how far to move from the market-implied number toward our projection.
+  # Set from 2025 projection-vs-outcome correlations (receiving/rushing ~0.42-0.50, passing ~0.15).
+  model_weight:
+    rec_yds: 0.20
+    receptions: 0.20
+    rush_yds: 0.20
+    rush_att: 0.15
+    pass_yds: 0.08
+    pass_att: 0.08
+    pass_tds: 0.05
+    anytime_td: 0.30          # in log-odds space
+  attd_one_sided_hold: 0.18   # yes-only TD prices carry heavy juice; strip this much to get a fair price
+  min_line:                   # skip tiny lines (QB 0.5 rush yds etc.)
+    rush_yds: 9.5
+    rec_yds: 9.5
+    pass_yds: 150
   nfl_markets: [player_pass_yds, player_pass_tds, player_pass_attempts, player_rush_yds, player_rush_attempts, player_receptions, player_reception_yds, player_anytime_td]
   min_games: 2
 

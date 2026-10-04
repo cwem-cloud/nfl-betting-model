@@ -29,51 +29,79 @@ def _pct(s) -> float | None:
 
 
 def parse_dk_splits_html(html: str, sport: str) -> pd.DataFrame:
-    """Parse the DK Network splits markup.
+    """Parse the DK Network splits page.
 
-    The page renders one block per game with rows: market label, team/side label,
-    handle %, bets %. We scan text rows in order and pair consecutive sides.
+    Layout (verified live Oct 2026): div.tb-se per game; its h5 title reads "AWAY @ HOME";
+    div.tb-market-wrap holds one block per market whose .tb-se-head names it (Moneyline / Spread /
+    Total), and each .tb-sodd row has four cells: label, odds, % handle, % bets.
     """
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "lxml")
-    rows = []
     now = datetime.now(timezone.utc).isoformat()
-    for game in soup.select("div.tb-se, div[class*='splits-game'], div.tb-se-row-container"):
-        title = game.find(class_=re.compile("tb-se-title|game-title|matchup"))
-        teams = re.split(r"\s+@\s+|\s+at\s+", title.get_text(" ", strip=True)) if title else []
-        if len(teams) != 2:
+    rows = []
+    for game in soup.select("div.tb-se"):
+        title = game.select_one(".tb-se-title h5") or game.select_one(".tb-se-title")
+        if not title:
             continue
-        away, home = teams[0].strip(), teams[1].strip()
-        market = None
-        for line in game.find_all(class_=re.compile("tb-sodd|split-row|tb-se-row")):
-            txt = line.get_text(" ", strip=True)
-            lower = txt.lower()
-            if lower.startswith(("moneyline", "spread", "total")):
-                market = {"moneyline": "ml", "spread": "spread", "total": "total"}[lower.split()[0]]
+        parts = [t.strip() for t in title.get_text(" ", strip=True).split("@")]
+        if len(parts) != 2:
+            continue
+        away, home = parts
+        for block in game.select(".tb-market-wrap > div"):
+            head = block.select_one(".tb-se-head")
+            if not head:
                 continue
-            pcts = re.findall(r"\d+(?:\.\d+)?\s*%", txt)
-            if market and len(pcts) >= 2:
-                handle, bets = _pct(pcts[0]), _pct(pcts[1])
+            first = head.find("div")
+            name = (first.get_text(strip=True) if first else head.get_text(" ", strip=True)).lower()
+            market = "ml" if name.startswith("money") else "spread" if name.startswith("spread") else \
+                "total" if name.startswith("total") else None
+            if not market:
+                continue
+            for row in block.select(".tb-sodd"):
+                cells = row.find_all("div", recursive=False)
+                if len(cells) < 4:
+                    continue
+                label = cells[0].get_text(" ", strip=True)
+                handle, bets = _pct(cells[2].get_text(" ", strip=True)), _pct(cells[3].get_text(" ", strip=True))
+                if handle is None or bets is None:
+                    continue
+                low = label.lower()
                 if market == "total":
-                    side = "over" if "over" in lower else "under"
+                    side = "over" if low.startswith("over") else "under" if low.startswith("under") else None
+                elif label.startswith(away):
+                    side = "away"
+                elif label.startswith(home):
+                    side = "home"
                 else:
-                    side = "away" if away.split()[-1].lower() in lower else "home"
-                rows.append([sport, away, home, market, side, bets, handle, "DK Network", now])
+                    side = None
+                if side:
+                    rows.append([sport, away, home, market, side, bets, handle, "DK Network", now])
     return pd.DataFrame(rows, columns=SPLIT_COLS)
 
 
-def fetch_dk_splits(sport: str) -> pd.DataFrame:
-    try:
-        r = SESSION.get(
-            DK_SPLITS_URL,
-            params={"tb_eg": DK_EVENT_GROUPS[sport], "tb_edate": "n7days", "tb_emt": "0"},
-            timeout=30,
-        )
-        r.raise_for_status()
-        return parse_dk_splits_html(r.text, sport)
-    except Exception:
-        return pd.DataFrame(columns=SPLIT_COLS)
+def fetch_dk_splits(sport: str, max_pages: int = 8) -> pd.DataFrame:
+    """All pages of the DK Network splits table (10 games per page, `tb_page` param)."""
+    frames, seen = [], set()
+    for page in range(1, max_pages + 1):
+        try:
+            r = SESSION.get(
+                DK_SPLITS_URL,
+                params={"tb_eg": DK_EVENT_GROUPS[sport], "tb_edate": "n7days", "tb_emt": "0", "tb_page": page},
+                timeout=30,
+            )
+            r.raise_for_status()
+        except Exception:
+            break
+        df = parse_dk_splits_html(r.text, sport)
+        games = set(zip(df["away"], df["home"])) if len(df) else set()
+        if not games or games <= seen:  # past the last page (some sites repeat the final page)
+            break
+        frames.append(df[[g not in seen for g in zip(df["away"], df["home"])]])
+        seen |= games
+        if f"tb_page={page + 1}" not in r.text.replace("&#038;", "&"):
+            break
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SPLIT_COLS)
 
 
 def parse_manual_csv(text: str, source: str = "manual") -> pd.DataFrame:

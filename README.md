@@ -39,9 +39,13 @@ flagged rather than bet, since that usually means the model is missing news.
    - `DATABASE_URL` *(strongly recommended)*: a free [Neon](https://neon.tech) or Supabase Postgres connection string.
      It keeps one shared history for the scheduled runs and the dashboard's Run button. Without it, history lives in
      `data/pocket_capper.db` (SQLite) and the GitHub Action commits it after each run. That works, but it grows the
-     repo all season and Run-button picks made on Streamlit Cloud aren't kept. To limit the growth, only changed
+     repo all season and Run-button picks made on a hosted dashboard aren't kept. To limit the growth, only changed
      prices are stored and old boards are pruned.
-2. **Dashboard**: Streamlit Community Cloud → New app → this repo, main file `app/app.py`.
+2. **Dashboard** on [Render](https://render.com) (free; the repo has a `Dockerfile` and `render.yaml`):
+   **New → Blueprint** → pick this repo → paste the same keys when prompted → **Apply**. It redeploys
+   on every push to `main`. The free tier sleeps after 15 idle minutes, so the first load takes about a minute.
+   The same `Dockerfile` runs on Hugging Face Spaces, Railway or Fly. Streamlit Community Cloud also works:
+   main file `app/app.py`.
 3. **Schedule**: `.github/workflows/pocket_capper.yml` runs the full slate at 10:15 ET on Mon and Thu–Sun,
    re-runs Sunday at 11:45 ET after inactives are announced, snapshots odds and splits six times a day Thu–Mon,
    and does a grading sweep on Tuesday. You can also trigger it manually from the Actions tab.

@@ -15,13 +15,20 @@ sports:
     ridge_alpha: 3.0
     epa_blend: 0.45               # weight of EPA-implied points vs raw points in the target
     hfa_points: 1.6               # fallback home-field edge if not fitted
+    home_edge_adjust: 0.5         # added to the fitted HFA; see backtest residuals
     margin_sigma: 13.2
     total_sigma: 13.3
-    qb_out_points: 4.5            # max swing when a starting QB is ruled out (scaled by QB quality)
-    rest_points_per_day: 0.18
-    wind_total_per_mph_over_12: -0.35
-    cold_total_below_25f: -1.5
+    # Starting QB ruled out: points lost = base + per_epa * starter's EPA/play (fit on 561 games, 2020-25)
+    qb_out_base: 2.2
+    qb_out_per_epa: 9.8
+    qb_out_cap: 7.0
+    rest_points_per_day: 0.15
+    wind_threshold_mph: 8
+    wind_total_per_mph: -0.35     # per mph above the threshold
+    wind_total_cap: -6.0
+    cold_total_below_25f: -3.0
     precip_total: -1.2
+    dome_total: 2.0               # domes/closed roofs score more than the all-venue ratings imply
     # Blend between blind model probability and de-vigged sharp market probability.
     # The blind number is formed first; this weight only controls how much we trust it vs the market for sizing.
     # Walk-forward 2023-25: blind MAE 10.33 vs closing line 9.81 on sides, 10.33 vs 10.11 on totals,

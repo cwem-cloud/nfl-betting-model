@@ -22,6 +22,11 @@ from scipy import sparse
 from sklearn.linear_model import Ridge
 
 
+# Home field is one league-wide parameter with thousands of observations; scaling its column
+# makes the ridge penalty on it negligible (unscaled, ridge shrank HFA ~1 pt too low in backtests).
+HFA_SCALE = 10.0
+
+
 @dataclass
 class Ratings:
     mu: float
@@ -111,7 +116,7 @@ def fit_ratings(
     def_cols = lf["opp"].map(idx).values + k
     X = sparse.csr_matrix(
         (
-            np.concatenate([np.ones(n), np.ones(n), lf["home"].values.astype(float) / 2]),
+            np.concatenate([np.ones(n), np.ones(n), lf["home"].values.astype(float) / 2 * HFA_SCALE]),
             (np.concatenate([rows, rows, rows]), np.concatenate([off_cols, def_cols, np.full(n, 2 * k)])),
         ),
         shape=(n, 2 * k + 1),
@@ -122,7 +127,7 @@ def fit_ratings(
     gp = lf.groupby("team").size().to_dict()
     return Ratings(
         mu=float(model.intercept_),
-        hfa=float(coef[2 * k]),
+        hfa=float(coef[2 * k]) * HFA_SCALE,
         off={t: float(coef[idx[t]]) for t in teams},
         deff={t: float(coef[idx[t] + k]) for t in teams},
         games_played={t: float(v) for t, v in gp.items()},

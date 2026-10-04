@@ -93,6 +93,10 @@ def project_games(
     rows = []
     for _, g in upcoming.iterrows():
         hp, ap = ratings.project(g["home"], g["away"], bool(g.get("neutral", False)))
+        if not bool(g.get("neutral", False)):
+            # EPA-blended ratings under-credit home field (special teams/penalties); 2020-25 residual ~+0.6
+            hp += cfg["home_edge_adjust"] / 2
+            ap -= cfg["home_edge_adjust"] / 2
         notes = []
         # Rest / bye edge
         rest_diff = float(np.nan_to_num(g.get("home_rest", 7)) - np.nan_to_num(g.get("away_rest", 7)))
@@ -107,19 +111,24 @@ def project_games(
             flags = (qb_flags or {}).get(team, [])
             starter = (qb_values or {}).get(team)
             if starter and any(f["id"] == starter["id"] and f["status"] in OUT_STATUSES for f in flags):
-                quality = np.clip(0.5 + starter["epa_pp"] * 3, 0.3, 1.4)
-                hit = cfg["qb_out_points"] * quality
+                # fit on 561 primary-QB-out games 2020-25: lost pts ~= 2.2 + 9.8 * starter EPA/play
+                hit = float(np.clip(cfg["qb_out_base"] + cfg["qb_out_per_epa"] * starter["epa_pp"], 0, cfg["qb_out_cap"]))
                 if side == "home":
                     hp -= hit
                 else:
                     ap -= hit
                 notes.append(f"{team} QB {starter['name']} OUT (-{hit:.1f} pts)")
-        # Weather (outdoor only)
+        # Roof + weather (coefficients fit on 2020-25 blind-model total residuals)
+        roof = str(g.get("roof", "outdoors"))
+        if roof in ("dome", "closed"):
+            hp += cfg["dome_total"] / 2
+            ap += cfg["dome_total"] / 2
         wx = (weather or {}).get(g["game_id"])
-        if wx and str(g.get("roof", "outdoors")) in ("outdoors", "open"):
+        if wx and roof in ("outdoors", "open"):
             tot_adj = 0.0
-            if wx.get("wind_mph", 0) > 12:
-                tot_adj += cfg["wind_total_per_mph_over_12"] * (wx["wind_mph"] - 12)
+            over = wx.get("wind_mph", 0) - cfg["wind_threshold_mph"]
+            if over > 0:
+                tot_adj += max(cfg["wind_total_cap"], cfg["wind_total_per_mph"] * over)
             if wx.get("temp_f", 60) < 25:
                 tot_adj += cfg["cold_total_below_25f"]
             if wx.get("precip_prob", 0) >= 60:

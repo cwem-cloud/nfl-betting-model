@@ -73,9 +73,17 @@ is blended with the de-vigged sharp-book probability, with weights set by the ba
 | Walk-forward 2023–25 (768 games) | Blind model | Closing line |
 |---|---|---|
 | Margin MAE | 10.33 | 9.81 |
-| Total MAE | 10.33 | 10.11 |
-| O/U hit rate when model ≥3 pts off close | 100-86 (53.8%) | |
-| ATS hit rate when model ≥2 pts off close | 164-189 (46.5%) | |
+| Total MAE | 10.29 | 10.11 |
+| O/U hit rate when model ≥3 pts off close | 101-88 (53.4%) | |
+| ATS hit rate when model ≥2 pts off close | 163-183 (47.1%) | |
+
+Adjustments fit on history (nflverse 2020–25), not guessed:
+- **QB out**: 561 games where a team's primary QB didn't start. Points lost ≈ 2.2 + 9.8 × his EPA/play,
+  so a ~0.17 EPA/play starter is worth ~4 pts, and swapping out a below-average starter costs almost nothing.
+- **Wind / roof**: totals fall ~0.35 pts per mph above 8 mph (capped at -6). Domes and closed roofs run +2 over the
+  all-venue ratings. Below 25°F, -3.
+- **Home field** is fit unpenalized, plus a +0.5 correction for what EPA-based ratings miss.
+These were fit on 2020–25, which overlaps the 2023–25 test seasons, so read the table above as slightly flattering.
 
 Read it honestly: **the closing line beats any public-data model on sides.** So sides use
 a small model weight (0.20), and the edge there comes mostly from DK lagging the sharp books and

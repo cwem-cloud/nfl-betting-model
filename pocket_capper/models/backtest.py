@@ -23,7 +23,10 @@ def run(seasons: list[int], cfg: dict, games: pd.DataFrame | None = None, min_we
                 continue
             r = nfl_model.fit(games, s, wk, cfg)
             wg = sg[sg["week"] == wk]
-            proj = nfl_model.project_games(wg, r, cfg)
+            # historical kickoff weather from nflverse stands in for the live forecast
+            wx = {x.game_id: {"wind_mph": x.wind, "temp_f": x.temp, "precip_prob": 0}
+                  for x in wg.itertuples() if pd.notna(getattr(x, "wind", np.nan))}
+            proj = nfl_model.project_games(wg, r, cfg, weather=wx)
             m = wg[["game_id", "season", "week", "home", "away", "home_pts", "away_pts", "spread_line", "total_line"]].merge(
                 proj[["game_id", "fair_margin", "home_pts", "away_pts"]].rename(
                     columns={"home_pts": "p_home", "away_pts": "p_away"}

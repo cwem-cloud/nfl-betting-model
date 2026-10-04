@@ -12,6 +12,12 @@ on:
       task:
         description: "slate | snapshot | grade | tune-cfb | backtest-cfb"
         default: slate
+      sports:
+        description: "nfl,cfb"
+        default: "nfl,cfb"
+      props:
+        description: "include NFL props (true/false)"
+        default: "true"
 
 concurrency:
   group: pocket-capper
@@ -54,7 +60,13 @@ jobs:
           fi
           echo "task=$T" >> "$GITHUB_OUTPUT"
       - if: steps.task.outputs.task == 'slate'
-        run: python scripts/run_slate.py
+        env:
+          SPORTS: ${{ github.event.inputs.sports || 'nfl,cfb' }}
+          PROPS: ${{ github.event.inputs.props || 'true' }}
+        run: |
+          case "$SPORTS" in nfl|cfb|nfl,cfb|cfb,nfl) ;; *) SPORTS=nfl,cfb ;; esac
+          if [ "$PROPS" = "false" ]; then python scripts/run_slate.py --sports "$SPORTS" --no-props
+          else python scripts/run_slate.py --sports "$SPORTS"; fi
       - if: steps.task.outputs.task == 'snapshot'
         run: python scripts/snapshot_odds.py
       - if: steps.task.outputs.task == 'grade'

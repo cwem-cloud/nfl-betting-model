@@ -46,6 +46,10 @@ flagged rather than bet, since that usually means the model is missing news.
    on every push to `main`. The free tier sleeps after 15 idle minutes, so the first load takes about a minute.
    The same `Dockerfile` runs on Hugging Face Spaces, Railway or Fly. Streamlit Community Cloud also works:
    main file `app/app.py`.
+   **Fast Run button (recommended):** a free host's CPU makes an in-app run take 10–15 minutes. Add a
+   GitHub fine-grained token as `GH_DISPATCH_TOKEN` in the dashboard's environment, and Run starts
+   the job on GitHub Actions instead (~2–3 minutes). Results land in the same database. To create the
+   token: GitHub → Settings → Developer settings → Fine-grained tokens → this repo only → Actions: Read and write.
 3. **Schedule**: `.github/workflows/pocket_capper.yml` runs the full slate at 10:15 ET on Mon and Thu–Sun,
    re-runs Sunday at 11:45 ET after inactives are announced, snapshots odds and splits six times a day Thu–Mon,
    and does a grading sweep on Tuesday. You can also trigger it manually from the Actions tab.

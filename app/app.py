@@ -61,7 +61,32 @@ with st.sidebar:
     bankroll = st.number_input("Bankroll ($)", min_value=0, value=1000, step=100,
                                help="Only used to show $ per play. 1U = unit_pct_bankroll% in config.yaml.")
     UNIT_USD = bankroll * cfg["units"]["unit_pct_bankroll"] / 100
-    if st.button("▶ Run", type="primary", width="stretch"):
+    from pocket_capper.engine import remote
+
+    if remote.enabled():
+        # Runs on GitHub Actions: ~2 minutes, vs 10-15 on a free web host's sliver of CPU.
+        if st.button("▶ Run", type="primary", width="stretch"):
+            try:
+                remote.dispatch(sports, include_props)
+                st.success("Run started on GitHub. Results land here in ~2-3 minutes. Hit Refresh below.")
+            except Exception as e:
+                st.error(str(e))
+        try:
+            runs_gh = remote.latest_runs(1)
+            if runs_gh:
+                r0 = runs_gh[0]
+                icon = {"success": "✅", "failure": "❌", "cancelled": "⚪"}.get(r0["conclusion"], "⏳")
+                st.caption(f"{icon} Latest GitHub run: {r0['status']} {r0['conclusion'] or ''} "
+                           f"({r0['event']}, {r0['created_at'][:16].replace('T', ' ')} UTC) [log]({r0['url']})")
+        except Exception:
+            pass
+        if st.button("↻ Refresh", width="stretch"):
+            st.rerun()
+        local_run = st.toggle("Run here instead (slow on free hosting)", value=False)
+    else:
+        local_run = True
+    if local_run and st.button("▶ Run here" if remote.enabled() else "▶ Run",
+                               type="secondary" if remote.enabled() else "primary", width="stretch"):
         from pocket_capper.engine import grading, slate
 
         status = st.status("Running Pocket Capper…", expanded=True)
@@ -78,7 +103,8 @@ with st.sidebar:
     st.divider()
     st.caption("Data connections")
     for name, label in (("ODDS_API_KEY", "The Odds API (lines/props)"), ("CFBD_API_KEY", "CollegeFootballData"),
-                        ("ANTHROPIC_API_KEY", "Claude rationales (optional)"), ("DATABASE_URL", "Hosted DB (optional)")):
+                        ("ANTHROPIC_API_KEY", "Claude rationales (optional)"), ("DATABASE_URL", "Hosted DB (optional)"),
+                        ("GH_DISPATCH_TOKEN", "Run on GitHub (fast)")):
         st.write(("✅ " if secret(name) else "⚪ ") + label)
     runs = db.read(db.runs, "ORDER BY started_at DESC LIMIT 1")
     if not runs.empty:

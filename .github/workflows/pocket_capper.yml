@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "slate | snapshot | grade | tune-cfb | backtest-cfb"
+        description: "slate | snapshot | grade | tune-cfb | backtest-cfb | diagnose"
         default: slate
 
 concurrency:
@@ -59,6 +59,29 @@ jobs:
         run: python scripts/snapshot_odds.py
       - if: steps.task.outputs.task == 'grade'
         run: python scripts/grade.py
+      - name: Diagnose live integrations (throwaway DB, nothing committed)
+        if: steps.task.outputs.task == 'diagnose'
+        env:
+          DATABASE_URL: sqlite:////tmp/diagnose.db
+        run: |
+          python scripts/diagnose.py
+          python scripts/run_slate.py
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          from pocket_capper import db
+          for sport in ("nfl", "cfb"):
+              for kind in ("games", "props", "attd"):
+                  b, _ = db.latest_board(sport, kind)
+                  print(f"--- {sport} {kind}: {len(b)} rows")
+                  if len(b):
+                      cols = [c for c in ("away", "home", "fair_spread_home", "dk_spread_home", "sharp_spread_home", "fair_total", "dk_total", "dk_open_spread_home", "spread_bets_home", "spread_money_home", "notes", "best_play", "player", "stat", "side", "line", "price", "projection", "model_prob", "market_prob", "ev", "qualifies") if c in b]
+                      print(b[cols].head(25).to_string())
+          p = db.read(db.picks)
+          print("PICKS", len(p))
+          if len(p):
+              print(p[["sport", "category", "selection", "price", "units", "ev", "model_prob", "market_prob"]].to_string())
+              print(p["rationale"].iloc[0])
+          PY
       - if: steps.task.outputs.task == 'backtest-cfb'
         run: python scripts/backtest.py --cfb --seasons 2023,2024,2025
       - if: steps.task.outputs.task == 'tune-cfb'

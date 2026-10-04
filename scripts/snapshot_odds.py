@@ -13,9 +13,11 @@ for sport in ("nfl", "cfb"):
         if not df.empty:
             df = df[pd.to_datetime(df["commence_time"], utc=True) > pd.Timestamp.now(tz="UTC")]
         df["sport"] = sport
-        db.insert_df(db.odds_snapshots, df)
+        db.insert_snapshots(df)
         sp = splits.fetch_dk_splits(sport)
         db.insert_df(db.splits, sp)
         print(f"{sport}: {len(df)} prices, {len(sp)} split rows; API remaining {odds_api.LAST_USAGE.get('remaining')}")
     except Exception as e:
         print(f"{sport}: snapshot failed: {e}")
+
+db.compact()

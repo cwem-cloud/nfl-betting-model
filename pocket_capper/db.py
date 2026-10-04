@@ -123,6 +123,40 @@ def insert_df(table: Table, df: pd.DataFrame) -> None:
         conn.execute(table.insert(), recs)
 
 
+SNAP_KEY = ["event_id", "book", "market", "side", "player"]
+
+
+def insert_snapshots(df: pd.DataFrame) -> int:
+    """Store only prices that changed since the last stored snapshot of the same line.
+
+    Movement, steam and closing lines only need the change points; storing every unchanged
+    price every few hours would bloat the history (and the repo, in SQLite-commit mode).
+    """
+    if df is None or df.empty:
+        return 0
+    df = df.copy()
+    if "player" not in df:
+        df["player"] = None
+    ids = list(df["event_id"].astype(str).unique())
+    prev = pd.DataFrame()
+    for i in range(0, len(ids), 200):
+        chunk = ids[i:i + 200]
+        marks = ",".join(f":e{j}" for j in range(len(chunk)))
+        prev = pd.concat([prev, read(odds_snapshots, f"WHERE event_id IN ({marks})",
+                                     {f"e{j}": e for j, e in enumerate(chunk)})])
+    if not prev.empty:
+        prev = prev.sort_values("fetched_at").groupby(
+            [prev[k].fillna("") for k in SNAP_KEY])[["point", "price"]].last()
+        key = pd.MultiIndex.from_frame(df[SNAP_KEY].fillna("").astype(str))
+        last = prev.reindex(key)
+        same = (
+            (last["point"].values == df["point"].values) | (pd.isna(last["point"].values) & pd.isna(df["point"].values))
+        ) & (last["price"].values == df["price"].values)
+        df = df[~same]
+    insert_df(odds_snapshots, df)
+    return len(df)
+
+
 def read(table: Table | str, where: str = "", params: dict | None = None) -> pd.DataFrame:
     name = table if isinstance(table, str) else table.name
     with engine().connect() as conn:
@@ -179,12 +213,27 @@ def table_names() -> list[str]:
     return inspect(engine()).get_table_names()
 
 
+BOARDS_KEPT = 3
+
+
 def save_board(run_id: str, sport: str, kind: str, df: pd.DataFrame) -> None:
+    """Store the latest board; only the last few per sport/kind are kept (the dashboard shows the newest)."""
     with engine().begin() as conn:
         conn.execute(boards.insert(), [{
             "run_id": run_id, "sport": sport, "kind": kind, "created_at": now(),
             "payload": df.to_json(orient="records", date_format="iso"),
         }])
+        keep = [r[0] for r in conn.execute(
+            select(boards.c.id).where(boards.c.sport == sport, boards.c.kind == kind)
+            .order_by(boards.c.id.desc()).limit(BOARDS_KEPT))]
+        conn.execute(boards.delete().where(boards.c.sport == sport, boards.c.kind == kind, boards.c.id.notin_(keep)))
+
+
+def compact() -> None:
+    """Reclaim space after pruning (SQLite only)."""
+    if engine().dialect.name == "sqlite":
+        with engine().connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT").execute(text("VACUUM"))
 
 
 def latest_board(sport: str, kind: str) -> tuple[pd.DataFrame, str | None]:

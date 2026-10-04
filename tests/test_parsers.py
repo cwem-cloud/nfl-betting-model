@@ -53,3 +53,15 @@ def test_manual_splits_csv():
     df = splits.parse_manual_csv(text, source="Action")
     assert df.iloc[0].bets_pct == 68 and df.iloc[0].money_pct == 41 and df.iloc[0].source == "Action"
     assert isinstance(df, pd.DataFrame)
+
+
+def test_snapshots_store_only_changes(tmp_db):
+    from tests_helpers import snap_rows
+
+    first = snap_rows("2026-10-01T12:00:00+00:00", -3.0, -110)
+    assert tmp_db.insert_snapshots(first) == 2
+    # identical prices a few hours later: nothing stored
+    assert tmp_db.insert_snapshots(snap_rows("2026-10-01T15:00:00+00:00", -3.0, -110)) == 0
+    # line moves: both sides stored
+    assert tmp_db.insert_snapshots(snap_rows("2026-10-01T18:00:00+00:00", -3.5, -110)) == 2
+    assert len(tmp_db.read(tmp_db.odds_snapshots)) == 4

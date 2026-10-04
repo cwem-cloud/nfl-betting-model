@@ -36,8 +36,11 @@ flagged rather than bet, since that usually means the model is missing news.
      5 runs a week with props plus odds snapshots (≈4–5K credits/month). The free 500 covers game lines only.
    - `CFBD_API_KEY`: free at [collegefootballdata.com/key](https://collegefootballdata.com/key).
    - `ANTHROPIC_API_KEY` *(optional)*: Claude writes a short prose rationale on top of the factual bullets.
-   - `DATABASE_URL` *(optional)*: a free Neon or Supabase Postgres. Without it, history lives in
-     `data/pocket_capper.db` (SQLite), and the GitHub Action commits it back after every run.
+   - `DATABASE_URL` *(strongly recommended)*: a free [Neon](https://neon.tech) or Supabase Postgres connection string.
+     It keeps one shared history for the scheduled runs and the dashboard's Run button. Without it, history lives in
+     `data/pocket_capper.db` (SQLite) and the GitHub Action commits it after each run. That works, but it grows the
+     repo all season and Run-button picks made on Streamlit Cloud aren't kept. To limit the growth, only changed
+     prices are stored and old boards are pruned.
 2. **Dashboard**: Streamlit Community Cloud → New app → this repo, main file `app/app.py`.
 3. **Schedule**: `.github/workflows/pocket_capper.yml` runs the full slate at 10:15 ET on Mon and Thu–Sun,
    re-runs Sunday at 11:45 ET after inactives are announced, snapshots odds and splits six times a day Thu–Mon,

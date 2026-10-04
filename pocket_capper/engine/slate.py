@@ -59,7 +59,7 @@ def run(sports=("nfl", "cfb"), include_props: bool = True, progress=None, now: d
 
 # ------------------------------------------------------------------ shared helpers
 
-def _fetch_odds(sport: str, cfg: dict, log, now: datetime) -> pd.DataFrame:
+def _fetch_odds(sport: str, cfg: dict, log, now: datetime, store: bool = True) -> pd.DataFrame:
     if not secret("ODDS_API_KEY"):
         log("No ODDS_API_KEY - blind board only (no market comparison).")
         return pd.DataFrame()
@@ -68,7 +68,8 @@ def _fetch_odds(sport: str, cfg: dict, log, now: datetime) -> pd.DataFrame:
         # never store or price in-play odds: they'd pollute closing lines and CLV
         df = df[pd.to_datetime(df["commence_time"], utc=True) > pd.Timestamp(now)]
     df["sport"] = sport
-    db.insert_df(db.odds_snapshots, df)
+    if store:
+        db.insert_snapshots(df)
     log(f"Odds: {df['event_id'].nunique() if not df.empty else 0} events from {df['book'].nunique() if not df.empty else 0} books "
         f"(API requests remaining: {odds_api.LAST_USAGE.get('remaining')})")
     return df
@@ -325,7 +326,7 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
         log("No props posted yet.")
         return 0
     props["sport"] = "nfl"
-    db.insert_df(db.odds_snapshots, props)
+    db.insert_snapshots(props)
     log(f"Props: {len(props)} prices across {props['book'].nunique()} books "
         f"(API requests remaining: {odds_api.LAST_USAGE.get('remaining')})")
     ev = evaluate.evaluate_props(props, pproj, cfg)
@@ -416,7 +417,7 @@ def run_cfb(run_id, cfg, log, now, include_props) -> int:
     db.save_board(run_id, "cfb", "ratings", ratings.table())
     log("CFB blind projections stored (before any odds were pulled).")
 
-    odds = _fetch_odds("cfb", cfg, log, now)
+    odds = _fetch_odds("cfb", cfg, log, now, store=False)  # stored after opening lines are seeded
     schools = sorted(set(up["home_raw"]) | set(up["away_raw"]))
     up = up.assign(home=up["home_raw"], away=up["away_raw"])
 
@@ -432,6 +433,7 @@ def run_cfb(run_id, cfg, log, now, include_props) -> int:
 
     if not odds.empty:
         _seed_cfb_opens(season, up, odds, match_event, log)
+        db.insert_snapshots(odds)
     return _game_rows("cfb", run_id, up, projs, odds, cfg, log, match_event, name_of)
 
 
@@ -454,11 +456,10 @@ def _seed_cfb_opens(season, up, odds, match_event, log) -> None:
         if not ev_id or ln.empty:
             continue
         hist = db.read(db.odds_snapshots, "WHERE event_id = :e AND player IS NULL AND book = 'draftkings'", {"e": ev_id})
-        if hist["fetched_at"].nunique() > 1:
-            continue  # already have history
+        if not hist.empty:
+            continue  # seen before: history already starts earlier
         ln = ln.iloc[0]
-        first = pd.to_datetime(hist["fetched_at"], utc=True).min() if not hist.empty else pd.Timestamp.now(tz="UTC")
-        at = (first - pd.Timedelta(hours=1)).isoformat()
+        at = (pd.to_datetime(odds["fetched_at"], utc=True).min() - pd.Timedelta(hours=1)).isoformat()
         home_name, away_name, commence = odds.loc[odds["event_id"] == ev_id, ["home_name", "away_name", "commence_time"]].iloc[0]
         rows = []
         if pd.notna(ln["spread_open"]):

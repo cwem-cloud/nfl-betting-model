@@ -101,7 +101,8 @@ def steam_moves(snap: pd.DataFrame, event_id: str, market: str, side: str, pts: 
     s = snap[(snap["event_id"] == event_id) & (snap["market"] == market) & (snap["side"] == side)]
     if s.empty or s["fetched_at"].nunique() < 2:
         return []
-    piv = s.pivot_table(index="fetched_at", columns="book", values="point", aggfunc="last").sort_index()
+    # only changes are stored, so carry each book's last number forward before differencing
+    piv = s.pivot_table(index="fetched_at", columns="book", values="point", aggfunc="last").sort_index().ffill()
     d = piv.diff()
     out = []
     for ts, row in d.iloc[1:].iterrows():

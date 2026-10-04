@@ -7,6 +7,7 @@ import argparse
 
 import _path  # noqa: F401
 
+from pocket_capper import db
 from pocket_capper.engine import grading, slate
 
 ap = argparse.ArgumentParser()
@@ -17,3 +18,4 @@ args = ap.parse_args()
 grading.grade_all()
 res = slate.run(tuple(args.sports.split(",")), include_props=not args.no_props, progress=print)
 print(f"run {res['run_id']}: {res['picks']} plays written; errors: {res['errors'] or 'none'}")
+db.compact()

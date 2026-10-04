@@ -96,6 +96,21 @@ def _manual_for(sport: str) -> pd.DataFrame:
     return db.read(db.sharp_plays, "WHERE sport = :s AND (status IS NULL OR status = 'pending')", {"s": sport})
 
 
+def _existing_pick_ids(sport: str) -> set[str]:
+    return set(db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})["pick_id"])
+
+
+_OPPOSITE = {"home": "away", "away": "home", "over": "under", "under": "over"}
+
+
+def _opposite_ids(pick_id: str) -> set[str]:
+    """Ids of bets that would oppose this one (spread and ML on the other team both count)."""
+    sport, gid, market, side, player = pick_id.split("|")
+    opp = _OPPOSITE.get(side, side)
+    markets = ("spread", "ml") if market in ("spread", "ml") else (market,)
+    return {f"{sport}|{gid}|{m}|{opp}|{player}" for m in markets}
+
+
 def _pick_record(sport, run_id, game, cand, proj, extra) -> dict:
     side = cand["side"]
     team = game["home"] if side == "home" else game["away"] if side == "away" else side.title()
@@ -137,7 +152,10 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         board = current_board(odds)
         snap = _history(sport, list(odds["event_id"].unique()))
     split_df = _splits(sport, log) if not odds.empty else pd.DataFrame()
+    if not split_df.empty:  # resolve split team names once, not per game
+        split_df = split_df.assign(home_key=split_df["home"].map(name_of), away_key=split_df["away"].map(name_of))
     manual = _manual_for(sport)
+    existing = _existing_pick_ids(sport)
     rows, n = [], 0
     for _, g in games.iterrows():
         pr = projs[projs["game_id"] == g["game_id"]]
@@ -149,14 +167,14 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         g["event_id"] = ev_id
         sp_map = {}
         if not split_df.empty:
-            for s in split_df.itertuples():
-                if name_of(s.home) == g["home"] and name_of(s.away) == g["away"]:
-                    sp_map[(s.market, s.side)] = {"bets_pct": s.bets_pct, "money_pct": s.money_pct}
+            for s in split_df[(split_df["home_key"] == g["home"]) & (split_df["away_key"] == g["away"])].itertuples():
+                sp_map[(s.market, s.side)] = {"bets_pct": s.bets_pct, "money_pct": s.money_pct}
         man = []
         if ev_id and not manual.empty:
             for m in manual[manual["event_id"] == ev_id].itertuples():
                 man.append({"source": m.source, "market": m.market, "side": m.selection, "direction": 1,
-                            "detail": f"{m.selection} {'' if pd.isna(m.line) else m.line} ({m.units or ''}U)"})
+                            "detail": f"{m.selection} {'' if pd.isna(m.line) else f'{m.line:+g}'}"
+                                      + ("" if pd.isna(m.units) else f" ({m.units:g}U)")})
         base = {
             "game_id": g["game_id"], "kickoff": str(g.get("kickoff")), "away": g["away"], "home": g["home"],
             "proj_away_pts": pr["away_pts"], "proj_home_pts": pr["home_pts"], "notes": " | ".join(pr["adjust_notes"]),
@@ -178,6 +196,11 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         best = []
         for c in sorted(plays, key=lambda c: -c["ev"]):
             p = _pick_record(sport, run_id, g, c, pr, {})
+            if p["pick_id"] in existing:  # already issued; refreshed below
+                best.append(f"{p['selection']} {fmt_american(c['price'])} (already on card)")
+                continue
+            if _opposite_ids(p["pick_id"]) & existing:  # never hedge against our own open play
+                continue
             if c["market"] == "spread":
                 dk_s = f"{p['selection']} {fmt_american(c['price'])}"
                 sharp_s = None if row["sharp_spread_home"] is None else f"{g['home']} {row['sharp_spread_home']:+g}"
@@ -190,6 +213,11 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
             db.upsert_pick(p)
             n += 1
             best.append(f"{p['selection']} {fmt_american(c['price'])} ({c['units']:g}U, {c['ev']:+.1%})")
+        # refresh every open pick on this game with the current line and its current EV
+        for c in cands:
+            pid = _pick_record(sport, run_id, g, c, pr, {})["pick_id"]
+            if pid in existing:
+                db.refresh_pick(pid, c["line"], c["price"], c["ev"])
         # strongest non-qualifying lean for transparency
         lean = max(cands, key=lambda c: c["ev"]) if cands else None
         rows.append({
@@ -199,7 +227,7 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         })
     out = pd.DataFrame(rows)
     db.save_board(run_id, sport, "games", out)
-    log(f"{sport.upper()}: {len(out)} games on the board, {n} plays")
+    log(f"{sport.upper()}: {len(out)} games on the board, {n} new plays")
     return n
 
 
@@ -303,11 +331,22 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
     ev = evaluate.evaluate_props(props, pproj, cfg)
     if ev.empty:
         return 0
+    existing_all = _existing_pick_ids("nfl")
+    gid_by_event = {}
+    for r in projs.itertuples():
+        m = odds[(odds["home_name"].map(teams.nfl_abbr) == r.home) & (odds["away_name"].map(teams.nfl_abbr) == r.away)]
+        if not m.empty:
+            gid_by_event[m["event_id"].iloc[0]] = r.game_id
+    for r in ev.to_dict("records"):  # current EV on open prop picks, qualifying or not
+        pid = f"nfl|{gid_by_event.get(r['event_id'])}|{r['market']}|{r['side']}|{r['player_id']}"
+        if pid in existing_all:
+            db.refresh_pick(pid, r["line"], r["price"], r["ev"])
     ev_games = odds.drop_duplicates("event_id").set_index("event_id")
     ev["matchup"] = ev["event_id"].map(lambda e: f"{teams.nfl_abbr(ev_games.loc[e, 'away_name'])} @ {teams.nfl_abbr(ev_games.loc[e, 'home_name'])}")
     ev["kickoff"] = ev["event_id"].map(lambda e: ev_games.loc[e, "commence_time"])
     n = 0
     gid = {(r.home, r.away): r.game_id for r in projs.itertuples()}
+    existing = _existing_pick_ids("nfl")
     for r in ev[ev["qualifies"]].to_dict("records"):
         away, home = r["matchup"].split(" @ ")
         is_td = r["stat"] == "anytime_td"
@@ -322,6 +361,8 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
             "market_prob": r["market_prob"], "final_prob": r["final_prob"], "ev": r["ev"],
             "fair_line": r["projection"], "signals": [],
         }
+        if p["pick_id"] in existing or _opposite_ids(p["pick_id"]) & existing:
+            continue
         blind = (f"{r['player']} ({r['position']}, {r['team']} vs {r['opp']}) projects "
                  + (f"{r['model_prob']:.0%} to score ({r['projection']:.2f} expected TDs)" if is_td
                     else f"{r['projection']:.1f} {label}"))
@@ -389,4 +430,46 @@ def run_cfb(run_id, cfg, log, now, include_props) -> int:
     def name_of(s):
         return teams.match_cfb(str(s), schools)
 
+    if not odds.empty:
+        _seed_cfb_opens(season, up, odds, match_event, log)
     return _game_rows("cfb", run_id, up, projs, odds, cfg, log, match_event, name_of)
+
+
+def _seed_cfb_opens(season, up, odds, match_event, log) -> None:
+    """The first time we see a CFB game, back-fill DK's opening number from CFBD so movement starts at the open."""
+    from pocket_capper.data import cfbd
+
+    try:
+        lines = cfbd.lines(season)
+    except Exception as e:
+        log(f"CFB opening lines skipped: {e}")
+        return
+    if lines.empty:
+        return
+    dk = lines[lines["provider"].fillna("").str.lower().str.contains("draftkings")]
+    seeded = 0
+    for _, g in up.iterrows():
+        ev_id = match_event(g, odds)
+        ln = dk[dk["game_id"] == str(g["game_id"])]
+        if not ev_id or ln.empty:
+            continue
+        hist = db.read(db.odds_snapshots, "WHERE event_id = :e AND player IS NULL AND book = 'draftkings'", {"e": ev_id})
+        if hist["fetched_at"].nunique() > 1:
+            continue  # already have history
+        ln = ln.iloc[0]
+        first = pd.to_datetime(hist["fetched_at"], utc=True).min() if not hist.empty else pd.Timestamp.now(tz="UTC")
+        at = (first - pd.Timedelta(hours=1)).isoformat()
+        home_name, away_name, commence = odds.loc[odds["event_id"] == ev_id, ["home_name", "away_name", "commence_time"]].iloc[0]
+        rows = []
+        if pd.notna(ln["spread_open"]):
+            rows += [("spread", "home", float(ln["spread_open"])), ("spread", "away", -float(ln["spread_open"]))]
+        if pd.notna(ln["total_open"]):
+            rows += [("total", "over", float(ln["total_open"])), ("total", "under", float(ln["total_open"]))]
+        if rows:
+            db.insert_df(db.odds_snapshots, pd.DataFrame([{
+                "sport": "cfb", "event_id": ev_id, "commence_time": commence, "home_name": home_name,
+                "away_name": away_name, "book": "draftkings", "market": m, "side": sd, "point": pt,
+                "price": -110.0, "fetched_at": at} for m, sd, pt in rows]))
+            seeded += 1
+    if seeded:
+        log(f"CFB: seeded DK opening lines for {seeded} games from CFBD")

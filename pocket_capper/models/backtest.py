@@ -92,3 +92,54 @@ def run_props(season: int, weeks: list[int], cfg: dict, games: pd.DataFrame | No
         m["week"] = wk
         out.append(m)
     return pd.concat(out, ignore_index=True)
+
+
+def run_cfb(seasons: list[int], cfg: dict, min_week: int = 3) -> pd.DataFrame:
+    """Walk-forward CFB blind model vs CFBD closing lines (FBS vs FBS only). Needs CFBD_API_KEY."""
+    from pocket_capper.data import cfbd
+    from pocket_capper.models import cfb_model
+
+    out = []
+    for s in seasons:
+        games = cfb_model.build_games(s)
+        ln = cfbd.lines(s)
+        if ln.empty:
+            continue
+        close = ln.groupby("game_id").agg(spread=("spread", "median"), total_line=("total", "median"))
+        sg = games[(games["season"] == s) & games["home_pts"].notna() & (games["home"] != "FCS") & (games["away"] != "FCS")]
+        for wk in sorted(sg["week"].unique()):
+            if wk < min_week:
+                continue
+            r = cfb_model.fit(games, s, wk, cfg)
+            wg = sg[sg["week"] == wk]
+            proj = cfb_model.project_games(wg, r, cfg)
+            m = wg[["game_id", "season", "week", "home_pts", "away_pts"]].merge(
+                proj[["game_id", "fair_margin", "home_pts", "away_pts"]].rename(columns={"home_pts": "p_home", "away_pts": "p_away"}),
+                on="game_id",
+            ).merge(close, left_on="game_id", right_index=True)
+            out.append(m)
+    bt = pd.concat(out, ignore_index=True)
+    bt["result"] = bt["home_pts"] - bt["away_pts"]
+    bt["total"] = bt["home_pts"] + bt["away_pts"]
+    bt["fair_total"] = bt["p_home"] + bt["p_away"]
+    bt["spread_line"] = -bt["spread"]  # CFBD spread is the home line; convert to expected home margin
+    return bt.dropna(subset=["spread_line", "total_line"])
+
+
+def tune(sport: str, seasons: list[int], base_cfg: dict, grid: dict) -> pd.DataFrame:
+    """Grid-search the blind model by out-of-sample MAE (margin + total) vs results."""
+    import itertools
+
+    keys = list(grid)
+    rows = []
+    nfl_games = nfl_model.build_games(sorted(set(seasons) | {min(seasons) - 1})) if sport == "nfl" else None
+    for combo in itertools.product(*grid.values()):
+        cfg = dict(base_cfg, **dict(zip(keys, combo)))
+        bt = run(seasons, cfg, nfl_games) if sport == "nfl" else run_cfb(seasons, cfg)
+        s = summarize(bt)
+        rows.append({**dict(zip(keys, combo)), "mae_margin": s["mae_margin_model"], "mae_total": s["mae_total_model"],
+                     "close_margin": s["mae_margin_close"], "close_total": s["mae_total_close"],
+                     "ats_2": s["ats_2"], "ou_3": s["ou_3"]})
+    out = pd.DataFrame(rows)
+    out["score"] = out["mae_margin"] + out["mae_total"]
+    return out.sort_values("score")

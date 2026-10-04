@@ -72,7 +72,7 @@ picks = Table(
     Column("units", Float), Column("model_prob", Float), Column("market_prob", Float),
     Column("final_prob", Float), Column("ev", Float), Column("fair_line", Float),
     Column("signals", Text), Column("rationale", Text),
-    Column("latest_line", Float), Column("latest_price", Float),
+    Column("latest_line", Float), Column("latest_price", Float), Column("latest_ev", Float),
     Column("close_line", Float), Column("close_price", Float), Column("clv_points", Float), Column("clv_prob", Float),
     Column("status", String), Column("result_value", Float), Column("profit_units", Float),
 )
@@ -95,7 +95,19 @@ def engine():
         url = f"sqlite:///{DATA_DIR / 'pocket_capper.db'}"
     eng = create_engine(url, future=True)
     meta.create_all(eng)
+    _add_missing_columns(eng)
     return eng
+
+
+def _add_missing_columns(eng) -> None:
+    """Tiny forward-only migration: add columns introduced after a table was first created."""
+    insp = inspect(eng)
+    with eng.begin() as conn:
+        for t in meta.sorted_tables:
+            have = {c["name"] for c in insp.get_columns(t.name)}
+            for c in t.columns:
+                if c.name not in have:
+                    conn.execute(text(f"ALTER TABLE {t.name} ADD COLUMN {c.name} {c.type.compile(eng.dialect)}"))
 
 
 def now() -> str:
@@ -141,9 +153,16 @@ def upsert_pick(p: dict) -> str:
         rec = {c.name: p.get(c.name) for c in picks.columns}
         rec["signals"] = json.dumps(p.get("signals") or [])
         rec.update(created_at=now(), updated_at=now(), status="pending",
-                   latest_line=p.get("line"), latest_price=p.get("price"))
+                   latest_line=p.get("line"), latest_price=p.get("price"), latest_ev=p.get("ev"))
         conn.execute(picks.insert(), [rec])
         return "inserted"
+
+
+def refresh_pick(pick_id: str, line, price, ev) -> None:
+    """Latest market + current EV for an open pick (feeds CLV and the 'edge still there?' check)."""
+    with engine().begin() as conn:
+        conn.execute(update(picks).where(picks.c.pick_id == pick_id, picks.c.status == "pending")
+                     .values(latest_line=line, latest_price=price, latest_ev=ev, updated_at=now()))
 
 
 def update_pick(pick_id: str, **values) -> None:

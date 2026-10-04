@@ -31,6 +31,7 @@ st.markdown(
 .pc-meta {color:#c3c2b7;font-size:.85rem}
 .pc-chip {display:inline-block;border:1px solid #555;border-radius:6px;padding:1px 6px;margin:2px 4px 0 0;font-size:.75rem;color:#c3c2b7}
 .pc-chip.pos {border-color:#53d769} .pc-chip.neg {border-color:#e66767}
+.pc-warn {color:#e66767;font-size:.85rem;font-weight:600;margin-top:4px}
 </style>
 """,
     unsafe_allow_html=True,
@@ -57,6 +58,9 @@ with st.sidebar:
     st.caption("Blind handicap first → then the market.")
     sports = st.multiselect("Sports", ["nfl", "cfb"], default=["nfl", "cfb"], format_func=str.upper)
     include_props = st.checkbox("Player props + TD Zone (NFL)", value=True)
+    bankroll = st.number_input("Bankroll ($)", min_value=0, value=1000, step=100,
+                               help="Only used to show $ per play. 1U = unit_pct_bankroll% in config.yaml.")
+    UNIT_USD = bankroll * cfg["units"]["unit_pct_bankroll"] / 100
     if st.button("▶ Run", type="primary", width="stretch"):
         from pocket_capper.engine import grading, slate
 
@@ -96,23 +100,42 @@ def pick_card(p: pd.Series) -> None:
     moved = ""
     if pd.notna(p.get("latest_line")) and pd.notna(p.get("line")) and p["latest_line"] != p["line"]:
         moved = f" · now {p['latest_line']:g}"
+    elif pd.notna(p.get("latest_price")) and p["latest_price"] != p["price"]:
+        moved = f" · now {fmt_american(p['latest_price'])}"
+    health = ""
+    if pd.notna(p.get("latest_ev")):
+        if p["latest_ev"] < 0:
+            health = f"<div class='pc-warn'>⚠ Edge gone at the current number ({p['latest_ev']:+.1%} EV now). Don't add.</div>"
+        elif p["latest_ev"] < p["ev"] / 2:
+            health = f"<div class='pc-meta'>↘ Edge shrinking: {p['latest_ev']:+.1%} EV at the current number</div>"
+    usd = f" · &#36;{p['units'] * UNIT_USD:,.0f}" if UNIT_USD else ""
     st.markdown(
         f"""<div class='pc-card'>
 <span class='pc-sel'>{p['selection']} {fmt_american(p['price'])}</span><span class='pc-u'>{p['units']:g}U</span>
 <div class='pc-meta'>{p['matchup']} · {kick}
- · DK · EV {p['ev']:+.1%} · win {p['final_prob']:.1%}{moved}</div>{chips}</div>""",
+ · DK · EV {p['ev']:+.1%} · win {p['final_prob']:.1%}{usd}{moved}</div>{health}{chips}</div>""",
         unsafe_allow_html=True,
     )
     with st.expander("Rationale"):
         st.markdown(p["rationale"] or "")
 
 
-def pending_picks(sport: str, categories: tuple[str, ...]) -> pd.DataFrame:
+def pending_picks(sport: str, categories: tuple[str, ...], upcoming_only: bool = True) -> pd.DataFrame:
     df = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
     if df.empty:
         return df
     df = df[df["category"].isin(categories)]
+    if upcoming_only:  # kicked-off picks wait in History until graded
+        df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce") > pd.Timestamp.now(tz="UTC")]
     return df.sort_values(["units", "ev"], ascending=False)
+
+
+def card_text(df: pd.DataFrame) -> str:
+    lines = []
+    for _, p in df.iterrows():
+        usd = f" (${p['units'] * UNIT_USD:,.0f})" if UNIT_USD else ""
+        lines.append(f"{p['units']:g}U{usd}  {p['selection']} {fmt_american(p['price'])}  [{p['matchup']}]")
+    return "\n".join(lines)
 
 
 def sport_tab(sport: str) -> None:
@@ -130,6 +153,10 @@ def sport_tab(sport: str) -> None:
         st.subheader("Plays")
         if picks.empty:
             st.info("No edges right now. That's a valid result - no forced plays.")
+        else:
+            with st.expander("📋 Copy card"):
+                extra = pending_picks(sport, ("prop", "attd")) if sport == "nfl" else pd.DataFrame()
+                st.code(card_text(pd.concat([picks, extra])), language=None)
         for _, p in picks.iterrows():
             pick_card(p)
     with right:

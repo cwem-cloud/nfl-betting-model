@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "slate | snapshot | grade"
+        description: "slate | snapshot | grade | tune-cfb | backtest-cfb"
         default: slate
 
 concurrency:
@@ -59,8 +59,12 @@ jobs:
         run: python scripts/snapshot_odds.py
       - if: steps.task.outputs.task == 'grade'
         run: python scripts/grade.py
+      - if: steps.task.outputs.task == 'backtest-cfb'
+        run: python scripts/backtest.py --cfb --seasons 2023,2024,2025
+      - if: steps.task.outputs.task == 'tune-cfb'
+        run: python scripts/backtest.py --cfb --tune --seasons 2024,2025
       - name: Commit history (SQLite mode only)
-        if: env.DATABASE_URL == ''
+        if: env.DATABASE_URL == '' && contains(fromJSON('["slate","snapshot","grade"]'), steps.task.outputs.task)
         run: |
           git config user.name "pocket-capper-bot"
           git config user.email "pocket-capper-bot@users.noreply.github.com"

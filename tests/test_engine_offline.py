@@ -79,6 +79,16 @@ def test_full_run_and_grade(tmp_db, monkeypatch):
     slate.run(("nfl",), include_props=False, now=NOW)
     assert len(tmp_db.read(tmp_db.picks)) == len(picks)
 
+    # market flips hard against every open pick: no opposing plays get added, and the
+    # open picks record the (now negative) current EV
+    flipped = fake_market.game_payload([(e, h, a, -m * 3 + (6 if m < 0 else -6), t, c) for e, h, a, m, t, c in games])
+    monkeypatch.setattr(odds_api, "_get", lambda path, params: flipped)
+    slate.run(("nfl",), include_props=False, now=NOW)
+    after = tmp_db.read(tmp_db.picks)
+    for p in after.itertuples():
+        assert not (slate._opposite_ids(p.pick_id) & set(after["pick_id"]))
+    assert after["latest_ev"].notna().all()
+
     # final scores arrive -> grading settles every pick
     done = sched.copy()
     m = (done.season == 2026) & (done.week == 4)
@@ -129,6 +139,12 @@ def test_cfb_run(tmp_db, monkeypatch):
 
     monkeypatch.setattr(cfbd, "games", games)
     monkeypatch.setattr(cfbd, "ppa_games", lambda year: pd.DataFrame())
+
+    def lines(year, week=None, season_type="regular"):
+        g = games(year).query("week == 6")
+        return pd.DataFrame({"game_id": g["game_id"], "home": g["home"], "away": g["away"], "provider": "DraftKings",
+                             "spread": -3.5, "spread_open": -1.5, "total": 50.0, "total_open": 52.5})
+    monkeypatch.setattr(cfbd, "lines", lines)
     monkeypatch.setattr(cfbd, "fbs_teams", lambda year: schools)
     monkeypatch.setattr(cfbd, "venues", lambda: pd.DataFrame([{"venue_id": 1, "name": "X", "lat": 33.2, "lon": -87.5, "dome": False}]))
     monkeypatch.setattr(weather, "kickoff_weather", lambda *a, **k: {"temp_f": 70, "wind_mph": 20, "gust_mph": 30, "precip_prob": 10})
@@ -153,3 +169,6 @@ def test_cfb_run(tmp_db, monkeypatch):
     board, _ = tmp_db.latest_board("cfb", "games")
     assert len(board) == 3 and board["event_id"].notna().all()
     assert board["notes"].str.contains("Weather").all()
+    # CFBD opening numbers were seeded so movement starts at the open
+    assert set(board["dk_open_spread_home"]) == {-1.5}
+    assert set(board["dk_open_total"]) == {52.5}

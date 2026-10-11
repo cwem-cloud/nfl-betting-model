@@ -66,7 +66,7 @@ def _fetch_odds(sport: str, cfg: dict, log, now: datetime, store: bool = True) -
     df = odds_api.game_odds(cfg["sports"][sport]["odds_key"], cfg["books"]["compare"])
     if not df.empty:
         # never store or price in-play odds: they'd pollute closing lines and CLV
-        df = df[pd.to_datetime(df["commence_time"], utc=True) > pd.Timestamp(now)]
+        df = df[pd.to_datetime(df["commence_time"], utc=True, format="ISO8601") > pd.Timestamp(now)]
     df["sport"] = sport
     if store:
         db.insert_snapshots(df)
@@ -462,7 +462,7 @@ def _seed_cfb_opens(season, up, odds, match_event, log) -> None:
         if not hist.empty:
             continue  # seen before: history already starts earlier
         ln = ln.iloc[0]
-        at = (pd.to_datetime(odds["fetched_at"], utc=True).min() - pd.Timedelta(hours=1)).isoformat()
+        at = (pd.to_datetime(odds["fetched_at"], utc=True, format="ISO8601").min() - pd.Timedelta(hours=1)).isoformat()
         home_name, away_name, commence = odds.loc[odds["event_id"] == ev_id, ["home_name", "away_name", "commence_time"]].iloc[0]
         rows = []
         if pd.notna(ln["spread_open"]):

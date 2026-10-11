@@ -30,5 +30,7 @@ jobs:
       - name: Require the real database
         run: test -n "$DATABASE_URL" || (echo "DATABASE_URL secret missing" && exit 1)
       - run: python scripts/grade.py
-      - run: python scripts/run_slate.py
+      - name: Run the slate (only when the commit message says [slate])
+        if: contains(github.event.head_commit.message, '[slate]') || github.event_name == 'workflow_dispatch'
+        run: python scripts/run_slate.py
       - run: python scripts/report.py

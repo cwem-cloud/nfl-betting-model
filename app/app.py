@@ -121,7 +121,7 @@ def pick_card(p: pd.Series) -> None:
         f"<span class='pc-chip {'pos' if s['direction'] > 0 else 'neg'}'>{'▲' if s['direction'] > 0 else '▼'} {s['name']}</span>"
         for s in sigs
     )
-    k = pd.to_datetime(p["kickoff"], utc=True, errors="coerce")
+    k = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601")
     kick = k.tz_convert("America/New_York").strftime("%a %b %d %I:%M %p ET") if pd.notna(k) else ""
     moved = ""
     if pd.notna(p.get("latest_line")) and pd.notna(p.get("line")) and p["latest_line"] != p["line"]:
@@ -152,7 +152,7 @@ def pending_picks(sport: str, categories: tuple[str, ...], upcoming_only: bool =
         return df
     df = df[df["category"].isin(categories)]
     if upcoming_only:  # kicked-off picks wait in History until graded
-        df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce") > pd.Timestamp.now(tz="UTC")]
+        df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce", format="ISO8601") > pd.Timestamp.now(tz="UTC")]
     return df.sort_values(["units", "ev"], ascending=False)
 
 
@@ -304,7 +304,7 @@ with tabs[4]:
         g = b[b["label"] == game].iloc[0]
         snap = db.read(db.odds_snapshots, "WHERE event_id = :e AND player IS NULL", {"e": g["event_id"]})
         if not snap.empty:
-            snap["fetched_at"] = pd.to_datetime(snap["fetched_at"], utc=True)
+            snap["fetched_at"] = pd.to_datetime(snap["fetched_at"], utc=True, format="ISO8601")
             latest = snap.sort_values("fetched_at").groupby(["book", "market", "side"]).last().reset_index()
 
             def cell(r):
@@ -407,7 +407,7 @@ with tabs[6]:
     if h.empty:
         st.info("No picks yet.")
     else:
-        h["kickoff_dt"] = pd.to_datetime(h["kickoff"], utc=True, errors="coerce")
+        h["kickoff_dt"] = pd.to_datetime(h["kickoff"], utc=True, errors="coerce", format="ISO8601")
         c1, c2, c3 = st.columns(3)
         sp_f = c1.multiselect("Sport", sorted(h["sport"].unique()), default=sorted(h["sport"].unique()), format_func=str.upper)
         cat_f = c2.multiselect("Type", sorted(h["category"].unique()), default=sorted(h["category"].unique()))

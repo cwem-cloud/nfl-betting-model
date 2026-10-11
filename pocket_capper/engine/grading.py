@@ -60,7 +60,7 @@ def closing_price(sport: str, event_id: str, market: str, side: str, kickoff: st
     snap = db.read(db.odds_snapshots, where, params)
     if snap.empty:
         return None
-    snap = snap[pd.to_datetime(snap["fetched_at"], utc=True) <= pd.to_datetime(kickoff, utc=True)]
+    snap = snap[pd.to_datetime(snap["fetched_at"], utc=True, format="ISO8601") <= pd.to_datetime(kickoff, utc=True, format="ISO8601")]
     if snap.empty:
         return None
     return snap.sort_values("fetched_at").iloc[-1]
@@ -78,7 +78,7 @@ def grade_all(log=print) -> dict:
     res_cfb = _results_cfb(cfb_seasons) if cfb_seasons and secret("CFBD_API_KEY") else pd.DataFrame()
     ps = pd.DataFrame()
     for p in picks.itertuples():
-        kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce")
+        kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce", format="ISO8601")
         side = p.pick_id.split("|")[3]
         # CLV once the game has kicked off
         if pd.notna(kickoff) and kickoff <= now and pd.isna(p.close_price):

@@ -14,7 +14,7 @@ p = db.read(db.picks)
 print(f"TOTAL PICKS IN DB: {len(p)}")
 if p.empty:
     raise SystemExit
-p["kick"] = pd.to_datetime(p["kickoff"], utc=True, errors="coerce").dt.tz_convert("America/New_York")
+p["kick"] = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
 p["price_s"] = p["price"].map(fmt_american)
 
 g = p[p["status"].isin(["win", "loss", "push"])].copy()

@@ -421,9 +421,13 @@ with tabs[6]:
         k1.metric("Record", f"{w}-{l}-{pu}")
         k2.metric("Units", f"{pl:+.2f}U")
         k3.metric("ROI", f"{pl / risked:+.1%}" if risked else "—")
-        clv = d["clv_prob"].dropna()
-        k4.metric("Avg CLV", f"{clv.mean():+.1%}" if len(clv) else "—", help="Implied-prob gain vs DK closing price. Positive = beating the close.")
-        k5.metric("Beat close", f"{(clv > 0).mean():.0%}" if len(clv) else "—")
+        from pocket_capper.engine.grading import clv_summary
+
+        c = clv_summary(d)
+        k4.metric("Avg CLV (pts)", f"{c['avg_pts']:+.2f}" if c["n"] and c["avg_pts"] == c["avg_pts"] else "—",
+                  help="Points the line moved your way between your bet and DK's close. Positive = beating the close.")
+        k5.metric("Beat close", f"{c['beat']:.0%}" if c["n"] else "—",
+                  help=f"Share of bets where DK's closing number or price was worse than yours ({c['worse']:.0%} were better)" if c["n"] else None)
         if not graded.empty:
             g = graded.sort_values("kickoff_dt")
             g["cum"] = g["profit_units"].cumsum()
@@ -455,7 +459,7 @@ with tabs[6]:
             "Kickoff": show["kickoff_dt"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d %I:%M %p"),
             "Sport": show["sport"].str.upper(), "Type": show["category"], "Matchup": show["matchup"],
             "Play": show["selection"], "Price": show["price"].map(fmt_american), "U": show["units"],
-            "EV": (show["ev"] * 100).round(1), "Close": show["close_line"], "CLV%": (show["clv_prob"] * 100).round(1),
+            "EV": (show["ev"] * 100).round(1), "Close": show["close_line"], "CLV pts": show["clv_points"], "CLV%": (show["clv_prob"] * 100).round(1),
             "Status": show["status"].map({"win": "✅ win", "loss": "❌ loss", "push": "➖ push", "pending": "⏳ pending", "void": "void"}),
             "P/L": show["profit_units"].round(2),
         }), hide_index=True, width="stretch")

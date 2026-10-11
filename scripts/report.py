@@ -6,6 +6,7 @@ import _path  # noqa: F401
 import pandas as pd
 
 from pocket_capper import db
+from pocket_capper.engine.grading import clv_summary
 from pocket_capper.market.odds_math import fmt_american
 
 pd.set_option("display.width", 250, "display.max_columns", 30, "display.max_rows", 500, "display.max_colwidth", 60)
@@ -24,15 +25,17 @@ if len(g):
         w, l, pu = (d["status"] == "win").sum(), (d["status"] == "loss").sum(), (d["status"] == "push").sum()
         risk = d["units"].sum()
         pl = d["profit_units"].sum()
-        clv = d["clv_prob"].dropna()
+        c = clv_summary(d)
         return pd.Series({"record": f"{w}-{l}-{pu}", "units_risked": round(risk, 2), "profit_u": round(pl, 2),
-                          "roi": f"{pl / risk:+.1%}" if risk else "-", "avg_clv": f"{clv.mean():+.1%}" if len(clv) else "-",
-                          "beat_close": f"{(clv > 0).mean():.0%}" if len(clv) else "-"})
+                          "roi": f"{pl / risk:+.1%}" if risk else "-",
+                          "clv_pts_avg": f"{c['avg_pts']:+.2f}" if c["n"] else "-",
+                          "beat_close": f"{c['beat']:.0%}" if c["n"] else "-",
+                          "worse_than_close": f"{c['worse']:.0%}" if c["n"] else "-"})
     print("\nOVERALL"); print(summ(g).to_string())
     print("\nBY SPORT/TYPE"); print(g.groupby(["sport", "category"]).apply(summ, include_groups=False).to_string())
     print("\nEVERY GRADED PICK")
     print(g.sort_values("kick")[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev",
-                                 "close_line", "clv_prob", "result_value", "status", "profit_units"]].to_string(index=False))
+                                 "close_line", "clv_points", "clv_prob", "result_value", "status", "profit_units"]].to_string(index=False))
 pend_past = p[(p["status"] == "pending") & (p["kick"] < pd.Timestamp.now(tz="America/New_York"))]
 if len(pend_past):
     print(f"\nKICKED OFF BUT NOT YET GRADED: {len(pend_past)}")

@@ -172,3 +172,11 @@ def test_cfb_run(tmp_db, monkeypatch):
     # CFBD opening numbers were seeded so movement starts at the open
     assert set(board["dk_open_spread_home"]) == {-1.5}
     assert set(board["dk_open_total"]) == {52.5}
+
+
+def test_clv_summary_counts_line_moves():
+    d = pd.DataFrame({"close_price": [-110, -110, -110, -110], "clv_points": [5.0, 0.0, -2.0, None],
+                      "clv_prob": [0.0, 0.02, 0.0, -0.01]})
+    c = grading.clv_summary(d)
+    assert c["n"] == 4 and c["beat"] == 0.5 and c["worse"] == 0.5
+    assert c["avg_pts"] == 1.0

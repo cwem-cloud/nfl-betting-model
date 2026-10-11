@@ -20,7 +20,10 @@ def test_dashboard_renders(tmp_db):
     base = dict(sport="nfl", category="side", event_id="e1", game_id="g1", matchup="BUF @ KC", market="spread",
                 price=-110.0, units=1.0, model_prob=0.55, market_prob=0.5, final_prob=0.52, ev=0.03, signals=sig,
                 rationale="- test", line=2.5)
-    tmp_db.upsert_pick(dict(base, pick_id="nfl|g1|spread|away|", selection="BUF +2.5", kickoff="2030-01-01T18:00:00Z"))
+    # game picks store "YYYY-MM-DD HH:MM:SS+00:00", prop picks the Odds API's "...T...Z": both must parse
+    tmp_db.upsert_pick(dict(base, pick_id="nfl|g1|spread|away|", selection="BUF +2.5", kickoff="2030-01-01 18:00:00+00:00"))
+    tmp_db.upsert_pick(dict(base, pick_id="nfl|g1|player_receptions|over|p1", category="prop", market="player_receptions",
+                            selection="Josh Allen Over 0.5 Receptions", kickoff="2030-01-01T18:00:00Z"))
     tmp_db.upsert_pick(dict(base, pick_id="nfl|g0|spread|away|", selection="BUF +3", kickoff="2025-01-01T18:00:00Z"))
     tmp_db.update_pick("nfl|g0|spread|away|", status="win", profit_units=0.91, clv_prob=0.02)
 
@@ -28,3 +31,5 @@ def test_dashboard_renders(tmp_db):
     assert not at.exception, at.exception
     text = " ".join(m.value for m in at.markdown)
     assert "BUF +2.5" in text
+    code = " ".join(c.value for c in at.code)
+    assert "Josh Allen Over 0.5 Receptions" in code  # prop shows on the copyable card

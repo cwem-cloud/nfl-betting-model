@@ -121,7 +121,7 @@ def pick_card(p: pd.Series) -> None:
         f"<span class='pc-chip {'pos' if s['direction'] > 0 else 'neg'}'>{'▲' if s['direction'] > 0 else '▼'} {s['name']}</span>"
         for s in sigs
     )
-    k = pd.to_datetime(p["kickoff"], utc=True, errors="coerce")
+    k = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601")
     kick = k.tz_convert("America/New_York").strftime("%a %b %d %I:%M %p ET") if pd.notna(k) else ""
     moved = ""
     if pd.notna(p.get("latest_line")) and pd.notna(p.get("line")) and p["latest_line"] != p["line"]:
@@ -152,7 +152,7 @@ def pending_picks(sport: str, categories: tuple[str, ...], upcoming_only: bool =
         return df
     df = df[df["category"].isin(categories)]
     if upcoming_only:  # kicked-off picks wait in History until graded
-        df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce") > pd.Timestamp.now(tz="UTC")]
+        df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce", format="ISO8601") > pd.Timestamp.now(tz="UTC")]
     return df.sort_values(["units", "ev"], ascending=False)
 
 
@@ -304,7 +304,7 @@ with tabs[4]:
         g = b[b["label"] == game].iloc[0]
         snap = db.read(db.odds_snapshots, "WHERE event_id = :e AND player IS NULL", {"e": g["event_id"]})
         if not snap.empty:
-            snap["fetched_at"] = pd.to_datetime(snap["fetched_at"], utc=True)
+            snap["fetched_at"] = pd.to_datetime(snap["fetched_at"], utc=True, format="ISO8601")
             latest = snap.sort_values("fetched_at").groupby(["book", "market", "side"]).last().reset_index()
 
             def cell(r):
@@ -407,7 +407,7 @@ with tabs[6]:
     if h.empty:
         st.info("No picks yet.")
     else:
-        h["kickoff_dt"] = pd.to_datetime(h["kickoff"], utc=True, errors="coerce")
+        h["kickoff_dt"] = pd.to_datetime(h["kickoff"], utc=True, errors="coerce", format="ISO8601")
         c1, c2, c3 = st.columns(3)
         sp_f = c1.multiselect("Sport", sorted(h["sport"].unique()), default=sorted(h["sport"].unique()), format_func=str.upper)
         cat_f = c2.multiselect("Type", sorted(h["category"].unique()), default=sorted(h["category"].unique()))
@@ -421,9 +421,13 @@ with tabs[6]:
         k1.metric("Record", f"{w}-{l}-{pu}")
         k2.metric("Units", f"{pl:+.2f}U")
         k3.metric("ROI", f"{pl / risked:+.1%}" if risked else "—")
-        clv = d["clv_prob"].dropna()
-        k4.metric("Avg CLV", f"{clv.mean():+.1%}" if len(clv) else "—", help="Implied-prob gain vs DK closing price. Positive = beating the close.")
-        k5.metric("Beat close", f"{(clv > 0).mean():.0%}" if len(clv) else "—")
+        from pocket_capper.engine.grading import clv_summary
+
+        c = clv_summary(d)
+        k4.metric("Avg CLV (pts)", f"{c['avg_pts']:+.2f}" if c["n"] and c["avg_pts"] == c["avg_pts"] else "—",
+                  help="Points the line moved your way between your bet and DK's close. Positive = beating the close.")
+        k5.metric("Beat close", f"{c['beat']:.0%}" if c["n"] else "—",
+                  help=f"Share of bets where DK's closing number or price was worse than yours ({c['worse']:.0%} were better)" if c["n"] else None)
         if not graded.empty:
             g = graded.sort_values("kickoff_dt")
             g["cum"] = g["profit_units"].cumsum()
@@ -455,7 +459,7 @@ with tabs[6]:
             "Kickoff": show["kickoff_dt"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d %I:%M %p"),
             "Sport": show["sport"].str.upper(), "Type": show["category"], "Matchup": show["matchup"],
             "Play": show["selection"], "Price": show["price"].map(fmt_american), "U": show["units"],
-            "EV": (show["ev"] * 100).round(1), "Close": show["close_line"], "CLV%": (show["clv_prob"] * 100).round(1),
+            "EV": (show["ev"] * 100).round(1), "Close": show["close_line"], "CLV pts": show["clv_points"], "CLV%": (show["clv_prob"] * 100).round(1),
             "Status": show["status"].map({"win": "✅ win", "loss": "❌ loss", "push": "➖ push", "pending": "⏳ pending", "void": "void"}),
             "P/L": show["profit_units"].round(2),
         }), hide_index=True, width="stretch")

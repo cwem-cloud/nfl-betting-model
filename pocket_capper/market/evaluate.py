@@ -220,14 +220,25 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
     board["key"] = board["player"].map(norm_player)
     proj = proj.copy()
     proj["key"] = proj["player"].map(norm_player)
-    pidx = proj.set_index("key")
+    from pocket_capper.data.teams import nfl_abbr
+
+    # A team can appear twice in the window (Sunday + next Thursday): pick the projection for THIS game.
+    event_teams = {}
+    if {"home_name", "away_name"} <= set(board.columns):
+        for r in board.drop_duplicates("event_id").itertuples():
+            event_teams[r.event_id] = {nfl_abbr(r.home_name), nfl_abbr(r.away_name)}
+    by_key = {k: g for k, g in proj.groupby("key")}
     rows = []
     for (ev_id, market, key), grp in board.groupby(["event_id", "market", "key"]):
-        if key not in pidx.index or market not in nfl_props.MARKET_STAT:
+        if key not in by_key or market not in nfl_props.MARKET_STAT:
             continue
-        pj = pidx.loc[key]
-        if isinstance(pj, pd.DataFrame):
-            pj = pj.iloc[0]
+        cands = by_key[key]
+        teams_here = event_teams.get(ev_id)
+        if teams_here:
+            cands = cands[cands["team"].isin(teams_here) & cands["opp"].isin(teams_here)]
+        if cands.empty:
+            continue
+        pj = cands.iloc[0]
         stat = nfl_props.MARKET_STAT[market]
         dk = grp[grp["book"] == primary]
         if dk.empty:

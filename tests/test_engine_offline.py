@@ -172,3 +172,30 @@ def test_cfb_run(tmp_db, monkeypatch):
     # CFBD opening numbers were seeded so movement starts at the open
     assert set(board["dk_open_spread_home"]) == {-1.5}
     assert set(board["dk_open_total"]) == {52.5}
+
+
+def test_clv_summary_counts_line_moves():
+    d = pd.DataFrame({"close_price": [-110, -110, -110, -110], "clv_points": [5.0, 0.0, -2.0, None],
+                      "clv_prob": [0.0, 0.02, 0.0, -0.01]})
+    c = grading.clv_summary(d)
+    assert c["n"] == 4 and c["beat"] == 0.5 and c["worse"] == 0.5
+    assert c["avg_pts"] == 1.0
+
+
+def test_props_use_this_games_projection():
+    """DEN plays LAC Sunday and SEA Thursday: the LAC prop must use the vs-LAC projection."""
+    from pocket_capper.market import evaluate
+    from pocket_capper.settings import config
+
+    proj = pd.DataFrame([
+        {"player": "Bo Nix", "player_id": "p", "team": "DEN", "opp": "SEA", "position": "QB", "rush_yds": 40.0},
+        {"player": "Bo Nix", "player_id": "p", "team": "DEN", "opp": "LAC", "position": "QB", "rush_yds": 12.0},
+    ])
+    rows = []
+    for book in ("draftkings", "fanduel"):
+        for side, price in (("over", -110), ("under", -110)):
+            rows.append({"event_id": "e1", "commence_time": "2030-01-01T18:00:00Z", "home_name": "Los Angeles Chargers",
+                         "away_name": "Denver Broncos", "book": book, "market": "player_rush_yds", "player": "Bo Nix",
+                         "side": side, "point": 15.5, "price": price, "fetched_at": "2030-01-01T12:00:00Z"})
+    out = evaluate.evaluate_props(pd.DataFrame(rows), proj, config())
+    assert len(out) == 1 and out.iloc[0]["opp"] == "LAC" and out.iloc[0]["projection"] == 12.0

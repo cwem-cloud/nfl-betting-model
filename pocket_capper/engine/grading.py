@@ -60,7 +60,7 @@ def closing_price(sport: str, event_id: str, market: str, side: str, kickoff: st
     snap = db.read(db.odds_snapshots, where, params)
     if snap.empty:
         return None
-    snap = snap[pd.to_datetime(snap["fetched_at"], utc=True) <= pd.to_datetime(kickoff, utc=True)]
+    snap = snap[pd.to_datetime(snap["fetched_at"], utc=True, format="ISO8601") <= pd.to_datetime(kickoff, utc=True, format="ISO8601")]
     if snap.empty:
         return None
     return snap.sort_values("fetched_at").iloc[-1]
@@ -78,7 +78,7 @@ def grade_all(log=print) -> dict:
     res_cfb = _results_cfb(cfb_seasons) if cfb_seasons and secret("CFBD_API_KEY") else pd.DataFrame()
     ps = pd.DataFrame()
     for p in picks.itertuples():
-        kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce")
+        kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce", format="ISO8601")
         side = p.pick_id.split("|")[3]
         # CLV once the game has kicked off
         if pd.notna(kickoff) and kickoff <= now and pd.isna(p.close_price):
@@ -140,3 +140,21 @@ def grade_sharp_plays(res_nfl: pd.DataFrame, res_cfb: pd.DataFrame) -> None:
         status, _ = grade_side(m.market, m.selection, m.line, float(r["home_pts"].iloc[0]), float(r["away_pts"].iloc[0]))
         price = m.price if pd.notna(m.price) else -110
         db.update_sharp(m.id, status=status, profit_units=om.profit_units(m.units or 1.0, price, status))
+
+
+def clv_summary(picks: pd.DataFrame) -> dict:
+    """Closing-line value over picks that have a recorded close.
+
+    A pick beat the close if the number moved its way (clv_points > 0), or, when the number didn't
+    move, if the price did (clv_prob > 0). The price-only CLV misses line moves (52.5 -> 47.5 on an
+    under shows 0% at the same -110), so points come first.
+    """
+    d = picks[picks["close_price"].notna()]
+    if d.empty:
+        return {"n": 0}
+    pts = d["clv_points"]
+    prob = d["clv_prob"].fillna(0)
+    beat = (pts > 0) | ((pts.fillna(0) == 0) & (prob > 0))
+    worse = (pts < 0) | ((pts.fillna(0) == 0) & (prob < 0))
+    return {"n": len(d), "beat": float(beat.mean()), "worse": float(worse.mean()),
+            "avg_pts": float(pts.dropna().mean()) if pts.notna().any() else float("nan")}

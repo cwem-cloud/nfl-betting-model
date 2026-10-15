@@ -119,6 +119,11 @@ def out_player_ids(season: int, week: int) -> set[str]:
     return set(wk[wk["report_status"].isin(OUT_STATUSES)]["gsis_id"])
 
 
+def _is_primetime(g) -> bool:
+    day, t = str(g.get("weekday", "")), str(g.get("gametime", ""))
+    return day in ("Monday", "Thursday") or (day == "Sunday" and t >= "19:00")
+
+
 def project_games(
     upcoming: pd.DataFrame,
     ratings: Ratings,
@@ -192,6 +197,16 @@ def project_games(
                 )
         margin = hp - ap
         total = hp + ap
+        # Output calibration fit on 2020-22 and validated on 2023-25 (actual vs projected):
+        # totals ran too dispersed (slope 0.87; margins fit 1.12 but stretching hurt ATS, so it is off), and
+        # primetime games land ~1.2 pts under the projection.
+        lg_total = 2 * ratings.mu
+        total = lg_total + cfg.get("total_shrink", 1.0) * (total - lg_total)
+        if _is_primetime(g):
+            total += cfg.get("primetime_total", 0.0)
+            notes.append(f"Primetime ({cfg.get('primetime_total', 0.0):+.1f} total)")
+        margin *= cfg.get("margin_stretch", 1.0)
+        hp, ap = (total + margin) / 2, (total - margin) / 2
         rows.append(
             {
                 "game_id": g["game_id"],

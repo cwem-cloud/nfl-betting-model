@@ -14,7 +14,10 @@ def _units(p_win, price, p_push, cfg, net_sig, cap=None):
     u = om.size_units(p_win, price, p_push, cfg["units"], cap)
     if u <= 0:
         return 0.0
-    u += cfg["units"]["sharp_signal_bonus"] * float(np.clip(net_sig, -2, 2))
+    if net_sig > 0:
+        u += cfg["units"].get("sharp_signal_bonus", 0.0) * float(min(net_sig, 2))
+    elif net_sig < 0:
+        u -= cfg["units"].get("sharp_signal_penalty", 0.25) * float(min(-net_sig, 2))
     cap = cap if cap is not None else cfg["units"]["max_units"]
     u = min(cap, round(u * 4) / 4)
     return u if u >= cfg["units"]["min_units"] else 0.0
@@ -165,10 +168,29 @@ def evaluate_game(
                               and abs(mu - (sharp_mu if sharp_mu is not None else mu)) <= edges["max_points_side"]),
             })
 
+    chase_names = {"Line move", "Steam", "RLM"}
+    for c in candidates:
+        if not c["qualifies"]:
+            continue
+        if c["ev"] > edges.get("max_ev_game", 1.0):
+            c["qualifies"] = False
+            c["skip_reason"] = f"EV {c['ev']:+.1%} too good to be true - model likely missing news"
+        elif cfg["sharp"].get("skip_chasing") and any(
+                sg["direction"] > 0 and sg["name"] in chase_names for sg in c["signals"]):
+            c["qualifies"] = False
+            c["skip_reason"] = "line already moved our way (chasing)"
+    enabled = set(scfg.get("markets", ["spread", "total", "ml"]))
+    stake = float(scfg.get("stake_mult", 1.0))
     for c in candidates:
         net = mk.net_signal(c["signals"])
         cap = cfg["units"]["max_units"]
-        c["units"] = _units(c["final_prob"], c["price"], c["push_prob"], cfg, net, cap) if c["qualifies"] else 0.0
+        if c["market"] not in enabled:
+            c["qualifies"] = False
+        u = _units(c["final_prob"], c["price"], c["push_prob"], cfg, net, cap) if c["qualifies"] else 0.0
+        if u and stake != 1.0:
+            u = round(u * stake * 4) / 4
+            u = u if u >= cfg["units"]["min_units"] else 0.0
+        c["units"] = u
         c["net_signal"] = net
     # One play per family per game: spread and ML on the same team are the same bet.
     for family in (("spread", "ml"), ("total",)):
@@ -179,6 +201,9 @@ def evaluate_game(
         f"Model {c['edge_pts']:.1f} pts off market on {c['market']} - likely missing news, no bet"
         for c in candidates if c.get("too_big")
     ) or None
+    skipped = [f"{c['market']} {c['side']}: {c['skip_reason']}" for c in candidates if c.get("skip_reason")]
+    if skipped:
+        row["flag"] = "; ".join(filter(None, [row["flag"], *skipped]))
     return row, candidates
 
 
@@ -263,7 +288,7 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             k = pcfg["model_weight"]["anytime_td"]
             p_final = _logistic(_logit(p_mkt) + k * (_logit(p_model) - _logit(p_mkt)))
             ev = om.expected_value(p_final, price)
-            qualifies = ev >= edges["min_ev_attd"] and price <= edges["max_attd_odds"]
+            qualifies = edges["min_ev_attd"] <= ev <= edges.get("max_ev_attd", 1.0) and price <= edges["max_attd_odds"]
             rows.append({
                 "event_id": ev_id, "player": pj["player"], "player_id": pj["player_id"], "team": pj["team"],
                 "opp": pj["opp"], "position": pj["position"], "market": market, "stat": stat, "side": "yes",
@@ -309,7 +334,8 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             best = cand if best is None or ev > best[0] else best
         ev, side, pm_, pk_, pf, price = best
         rel = (mean - line) / max(line, 0.5) if side == "over" else (line - mean) / max(line, 0.5)
-        qualifies = ev >= edges["min_ev_prop"] and edges["min_prop_edge_pct"] <= rel <= edges["max_prop_edge_pct"]
+        qualifies = (edges["min_ev_prop"] <= ev <= edges.get("max_ev_prop", 1.0)
+                     and edges["min_prop_edge_pct"] <= rel <= edges["max_prop_edge_pct"])
         rows.append({
             "event_id": ev_id, "player": pj["player"], "player_id": pj["player_id"], "team": pj["team"],
             "opp": pj["opp"], "position": pj["position"], "market": market, "stat": stat, "side": side,

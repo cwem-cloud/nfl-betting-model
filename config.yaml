@@ -36,7 +36,11 @@ sports:
     # Walk-forward 2023-25: blind MAE 10.33 vs closing line 9.81 on sides, 10.33 vs 10.11 on totals,
     # so the model earns a modest weight (more on totals, where it showed signal).
     model_weight_side: 0.20
-    model_weight_total: 0.30
+    model_weight_total: 0.15      # halved after a 1-7 live start; 2023-25 OOS blend optimum was 0.15-0.20
+    # Output calibration (fit 2020-22, validated 2023-25):
+    total_shrink: 0.87
+    margin_stretch: 1.0           # slope fit said 1.12, but it hurt ATS out-of-sample (47.4% -> 44.9% at 3+ pts); left off
+    primetime_total: -1.15
   cfb:
     odds_key: americanfootball_ncaaf
     decay_half_life_weeks: 6
@@ -51,6 +55,9 @@ sports:
     # Blending showed no gain on sides and a small one on totals (best w = 0.1-0.2).
     model_weight_side: 0.10
     model_weight_total: 0.20
+    # Live start 2-6 (-7.7U). Until CFB shows it can beat the close: totals only, half stakes.
+    markets: [total]
+    stake_mult: 0.5
 
 edges:
   min_ev_side: 0.025          # +2.5% expected value at the DK price
@@ -64,6 +71,9 @@ edges:
   min_prop_edge_pct: 0.06     # projection vs line, relative
   # Sanity guards: a huge model-vs-market gap usually means the model is missing news
   # (injury, QB change, weather) - those games are flagged, not bet.
+  max_ev_game: 0.10           # claimed EV above this is usually model error (live: 8%+ EV went 1-5): flag, don't bet
+  max_ev_prop: 0.10
+  max_ev_attd: 0.15
   max_points_side: 6.0
   max_points_total: 7.0
   ml_price_min: -200
@@ -73,6 +83,11 @@ edges:
   max_attd_plays: 8
   max_plays_per_game_props: 3 # limits correlated exposure in one game
 
+exposure:                     # daily caps (units), best EV first; counts picks already on the card
+  nfl_games_units_per_day: 8
+  nfl_props_units_per_day: 12
+  cfb_games_units_per_day: 4
+
 units:
   kelly_fraction: 0.25
   unit_pct_bankroll: 1.0      # 1U = 1% of bankroll
@@ -80,9 +95,13 @@ units:
   max_units: 3.0
   max_units_prop: 1.5
   max_units_attd: 0.5
-  sharp_signal_bonus: 0.25    # units added/removed per net agreeing/disagreeing sharp signal (capped)
+  # Was +/-0.25U per net signal. Live: game lines where signals "agreed" went 1-10 (-15.1U) - agreement
+  # mostly meant the market had already moved our way and the number was gone. Only disagreement trims now.
+  sharp_signal_bonus: 0.0
+  sharp_signal_penalty: 0.25
 
 sharp:
+  skip_chasing: true          # skip game-line plays after the line already moved toward our side (Line move/Steam/RLM)
   money_vs_bets_gap: 10       # money% - bets% >= this flags a sharp side
   rlm_bets_pct: 60            # public side >= this, but line moved the other way
   steam_points: 1.0           # move of >= 1 pt in one snapshot interval at >= 3 books

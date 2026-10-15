@@ -42,9 +42,13 @@ if len(pend_past):
     print(pend_past[["kick", "sport", "category", "matchup", "selection", "price_s", "units"]].to_string(index=False))
 v = p[p["status"] == "void"]
 if len(v):
-    print(f"\nVOID (player inactive): {len(v)}")
+    print(f"\nVOID (inactive player or rule change): {len(v)}")
 
 now = pd.Timestamp.now(tz="America/New_York")
+allopen = p[(p["status"] == "pending") & (p["kick"] >= now)].sort_values("kick")
+print(f"\n===== ALL OPEN PICKS ({len(allopen)}, {allopen['units'].sum():g}U) =====")
+if not allopen.empty:
+    print(allopen[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev"]].to_string(index=False))
 up = p[(p["status"] == "pending") & (p["kick"] >= now) & (p["kick"] <= now + pd.Timedelta(hours=36))].copy()
 print(f"\n===== CARD: PLAYS FOR GAMES IN THE NEXT 36 HOURS ({len(up)}) =====")
 if len(up):

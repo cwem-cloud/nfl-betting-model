@@ -100,6 +100,29 @@ def test_full_run_and_grade(tmp_db, monkeypatch):
     assert set(graded["status"]) <= {"win", "loss", "push"}
 
 
+def test_daily_exposure_cap(tmp_db, monkeypatch):
+    from pocket_capper.settings import config
+
+    sched = synthetic_schedule()
+    monkeypatch.setattr(nflverse, "schedules", lambda: sched.copy())
+    monkeypatch.setattr(nflverse, "team_game_epa", lambda seasons: pd.DataFrame())
+    monkeypatch.setattr(nflverse, "player_stats", lambda seasons: pd.DataFrame(columns=["season", "position"]))
+    monkeypatch.setattr(nflverse, "injuries", lambda season: pd.DataFrame())
+    monkeypatch.setattr(weather, "kickoff_weather", lambda *a, **k: None)
+    monkeypatch.setattr(splits, "fetch_dk_splits", lambda sport: pd.DataFrame(columns=splits.SPLIT_COLS))
+    monkeypatch.setattr(slate, "secret", lambda n, d=None: "test" if n == "ODDS_API_KEY" else None)
+    up = sched[(sched.season == 2026) & (sched.week == 4)]
+    rng = np.random.default_rng(3)
+    games = [(f"ev{i}", r.home_team, r.away_team, rng.normal(0, 3), 44 + rng.normal(0, 2), "2026-10-04T20:25:00Z")
+             for i, r in enumerate(up.itertuples())]
+    payload = fake_market.game_payload(games)
+    monkeypatch.setattr(odds_api, "_get", lambda path, params: payload)
+    monkeypatch.setitem(config()["exposure"], "nfl_games_units_per_day", 1.0)
+    slate.run(("nfl",), include_props=False, now=NOW)
+    picks = tmp_db.read(tmp_db.picks)
+    assert picks["units"].sum() <= 1.0 + 1e-9
+
+
 def test_grade_side():
     assert grading.grade_side("spread", "home", -3.0, 24, 21)[0] == "push"
     assert grading.grade_side("spread", "away", 3.5, 24, 21)[0] == "win"

@@ -157,7 +157,7 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         split_df = split_df.assign(home_key=split_df["home"].map(name_of), away_key=split_df["away"].map(name_of))
     manual = _manual_for(sport)
     existing = _existing_pick_ids(sport)
-    rows, n = [], 0
+    rows, n, queue = [], 0, []
     for _, g in games.iterrows():
         pr = projs[projs["game_id"] == g["game_id"]]
         if pr.empty:
@@ -202,18 +202,8 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
                 continue
             if _opposite_ids(p["pick_id"]) & existing:  # never hedge against our own open play
                 continue
-            if c["market"] == "spread":
-                dk_s = f"{p['selection']} {fmt_american(c['price'])}"
-                sharp_s = None if row["sharp_spread_home"] is None else f"{g['home']} {row['sharp_spread_home']:+g}"
-            elif c["market"] == "total":
-                dk_s = f"{p['selection']} {fmt_american(c['price'])}"
-                sharp_s = None if row["sharp_total"] is None else f"{row['sharp_total']:g}"
-            else:
-                dk_s, sharp_s = f"{p['selection']} {fmt_american(c['price'])}", None
-            p = _finalize_pick(p, blind, dk_s, sharp_s, context)
-            db.upsert_pick(p)
-            n += 1
-            best.append(f"{p['selection']} {fmt_american(c['price'])} ({c['units']:g}U, {c['ev']:+.1%})")
+            # written after the whole slate is evaluated, best EV first, within the day's exposure budget
+            queue.append((c, p, g, row, blind, context, best))
         # refresh every open pick on this game with the current line and its current EV
         for c in cands:
             pid = _pick_record(sport, run_id, g, c, pr, {})["pick_id"]
@@ -222,14 +212,63 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         # strongest non-qualifying lean for transparency
         lean = max(cands, key=lambda c: c["ev"]) if cands else None
         rows.append({
-            **base, **row, "best_play": " + ".join(best) if best else ("Flagged" if row.get("flag") else "No edge"),
+            **base, **row, "_best": best,
             "lean": None if not lean else f"{lean['market']} {lean['side']} ({lean['ev']:+.1%} EV)",
             "signals": json.dumps([s for c in cands for s in c["signals"] if c.get("units", 0) > 0 or s["direction"] > 0][:8]),
         })
+    budget = _DayBudget(sport, "games", cfg)
+    for c, p, g, row, blind, context, best in sorted(queue, key=lambda q: -q[0]["ev"]):
+        if not budget.take(p["kickoff"], c["units"]):
+            best.append(f"{p['selection']} {fmt_american(c['price'])} (skipped: daily exposure cap)")
+            continue
+        if c["market"] == "spread":
+            dk_s = f"{p['selection']} {fmt_american(c['price'])}"
+            sharp_s = None if row["sharp_spread_home"] is None else f"{g['home']} {row['sharp_spread_home']:+g}"
+        elif c["market"] == "total":
+            dk_s = f"{p['selection']} {fmt_american(c['price'])}"
+            sharp_s = None if row["sharp_total"] is None else f"{row['sharp_total']:g}"
+        else:
+            dk_s, sharp_s = f"{p['selection']} {fmt_american(c['price'])}", None
+        p = _finalize_pick(p, blind, dk_s, sharp_s, context)
+        db.upsert_pick(p)
+        n += 1
+        best.append(f"{p['selection']} {fmt_american(c['price'])} ({c['units']:g}U, {c['ev']:+.1%})")
+    for r in rows:  # best lists were filled in place after the rows were built
+        if "_best" in r:
+            b = r.pop("_best")
+            r["best_play"] = " + ".join(b) if b else ("Flagged" if r.get("flag") else "No edge")
     out = pd.DataFrame(rows)
     db.save_board(run_id, sport, "games", out)
     log(f"{sport.upper()}: {len(out)} games on the board, {n} new plays")
     return n
+
+
+class _DayBudget:
+    """Daily exposure cap (units) per sport and bucket, counting picks already on the card that day."""
+
+    def __init__(self, sport: str, bucket: str, cfg: dict):
+        self.cap = cfg.get("exposure", {}).get(f"{sport}_{bucket}_units_per_day")
+        cats = ("side", "total", "ml") if bucket == "games" else ("prop", "attd")
+        p = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
+        p = p[p["category"].isin(cats)] if not p.empty else p
+        self.used = {}
+        for r in p.itertuples():
+            d = self._day(r.kickoff)
+            self.used[d] = self.used.get(d, 0.0) + float(r.units or 0)
+
+    @staticmethod
+    def _day(kickoff) -> str:
+        k = pd.to_datetime(kickoff, utc=True, errors="coerce", format="ISO8601")
+        return "" if pd.isna(k) else k.tz_convert("America/New_York").strftime("%Y-%m-%d")
+
+    def take(self, kickoff, units: float) -> bool:
+        if not self.cap:
+            return True
+        d = self._day(kickoff)
+        if self.used.get(d, 0.0) + units > self.cap + 1e-9:
+            return False
+        self.used[d] = self.used.get(d, 0.0) + units
+        return True
 
 
 # ------------------------------------------------------------------ NFL
@@ -351,7 +390,8 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
     n = 0
     gid = {(r.home, r.away): r.game_id for r in projs.itertuples()}
     existing = _existing_pick_ids("nfl")
-    for r in ev[ev["qualifies"]].to_dict("records"):
+    budget = _DayBudget("nfl", "props", cfg)
+    for r in ev[ev["qualifies"]].sort_values("ev", ascending=False).to_dict("records"):
         away, home = r["matchup"].split(" @ ")
         is_td = r["stat"] == "anytime_td"
         label = nfl_props.STAT_LABEL[r["stat"]]
@@ -367,6 +407,8 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
         }
         if p["pick_id"] in existing or _opposite_ids(p["pick_id"]) & existing:
             continue
+        if not budget.take(p["kickoff"], p["units"]):
+            continue  # daily props exposure cap reached; best EV went first
         blind = (f"{r['player']} ({r['position']}, {r['team']} vs {r['opp']}) projects "
                  + (f"{r['model_prob']:.0%} to score ({r['projection']:.2f} expected TDs)" if is_td
                     else f"{r['projection']:.1f} {label}"))

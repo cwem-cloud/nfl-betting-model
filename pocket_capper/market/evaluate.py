@@ -165,10 +165,18 @@ def evaluate_game(
                               and abs(mu - (sharp_mu if sharp_mu is not None else mu)) <= edges["max_points_side"]),
             })
 
+    enabled = set(scfg.get("markets", ["spread", "total", "ml"]))
+    stake = float(scfg.get("stake_mult", 1.0))
     for c in candidates:
         net = mk.net_signal(c["signals"])
         cap = cfg["units"]["max_units"]
-        c["units"] = _units(c["final_prob"], c["price"], c["push_prob"], cfg, net, cap) if c["qualifies"] else 0.0
+        if c["market"] not in enabled:
+            c["qualifies"] = False
+        u = _units(c["final_prob"], c["price"], c["push_prob"], cfg, net, cap) if c["qualifies"] else 0.0
+        if u and stake != 1.0:
+            u = round(u * stake * 4) / 4
+            u = u if u >= cfg["units"]["min_units"] else 0.0
+        c["units"] = u
         c["net_signal"] = net
     # One play per family per game: spread and ML on the same team are the same bet.
     for family in (("spread", "ml"), ("total",)):

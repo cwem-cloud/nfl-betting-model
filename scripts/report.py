@@ -8,6 +8,7 @@ import pandas as pd
 from pocket_capper import db
 from pocket_capper.engine.grading import clv_summary
 from pocket_capper.market.odds_math import fmt_american
+from pocket_capper.settings import config
 
 pd.set_option("display.width", 250, "display.max_columns", 30, "display.max_rows", 500, "display.max_colwidth", 60)
 
@@ -51,6 +52,31 @@ allopen = p[(p["status"] == "pending") & (p["kick"] >= now)].sort_values("kick")
 print(f"\n===== ALL OPEN PICKS ({len(allopen)}, {allopen['units'].sum():g}U) =====")
 if not allopen.empty:
     print(allopen[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev"]].to_string(index=False))
+# Re-check every open play at the CURRENT DK line/price (latest_* are refreshed on each run, with the
+# latest injuries). Only plays that would still qualify today stay on this card.
+edges = config()["edges"]
+MIN_EV = {"side": edges["min_ev_side"], "total": edges["min_ev_total"], "ml": edges["min_ev_ml"],
+          "prop": edges["min_ev_prop"], "attd": edges["min_ev_attd"]}
+MAX_EV = {"side": edges["max_ev_game"], "total": edges["max_ev_game"], "ml": edges["max_ev_game"],
+          "prop": edges["max_ev_prop"], "attd": edges["max_ev_attd"]}
+if not allopen.empty:
+    a = allopen.copy()
+    a["now_line"] = a["latest_line"].fillna(a["line"])
+    a["now_price"] = a["latest_price"].fillna(a["price"])
+    a["edge_now"] = a["latest_ev"]
+    ok = (a["edge_now"] >= a["category"].map(MIN_EV)) & (a["edge_now"] <= a["category"].map(MAX_EV))
+    ok &= ~((a["category"] == "attd") & (a["now_price"] > edges["max_attd_odds"]))
+    live, gone = a[ok], a[~ok]
+    print(f"\n===== CARD AT CURRENT LINES ({len(live)} still qualify, {live['units'].sum():g}U) =====")
+    cols = ["kick", "category", "matchup", "selection", "now_line", "now_price_s", "units", "edge_now_s"]
+    for d in (live, gone):
+        d["now_price_s"] = d["now_price"].map(fmt_american)
+        d["edge_now_s"] = d["edge_now"].map(lambda x: "" if pd.isna(x) else f"{x:+.1%}")
+    if len(live):
+        print(live[cols].to_string(index=False))
+    print(f"\n----- edge gone at current lines, skip if not already bet ({len(gone)}) -----")
+    if len(gone):
+        print(gone[cols].to_string(index=False))
 up = p[(p["status"] == "pending") & (p["kick"] >= now) & (p["kick"] <= now + pd.Timedelta(hours=36))].copy()
 print(f"\n===== CARD: PLAYS FOR GAMES IN THE NEXT 36 HOURS ({len(up)}) =====")
 if len(up):

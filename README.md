@@ -28,6 +28,7 @@ flagged rather than bet, since that usually means the model is missing news.
 | 📈 Line Market | Open → current at DK, sharp line, bet % / money %, all-books grid, movement chart, splits CSV import |
 | 🧠 Sharp Inputs | Log plays from sharp sources. They become signals and get a graded record per source |
 | 📚 History | Every pick ever: record, units, ROI, CLV, cumulative units, breakdown by bet type, rationale lookup, CSV export |
+| 🛡️ Team Totals | Vegas implied team totals for this week (consensus spread + total), lowest opponent total first for D/ST streaming. Free from the last snapshot, or pull live for 2 credits |
 
 ## Setup (about 15 minutes)
 
@@ -60,6 +61,7 @@ Run locally:
 pip install -r requirements.txt
 streamlit run app/app.py               # dashboard with the Run button
 python scripts/run_slate.py            # same thing headless
+python scripts/team_totals.py          # live implied team totals this week (also: Actions → team totals)
 python scripts/backtest.py             # walk-forward NFL backtest vs closing lines
 python scripts/backtest.py --props 2025
 python -m pytest -q tests

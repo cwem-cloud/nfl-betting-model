@@ -84,10 +84,10 @@ def parse_props(ev: dict, fetched_at: str | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def game_odds(sport_key: str, books: list[str]) -> pd.DataFrame:
+def game_odds(sport_key: str, books: list[str], markets: str = "h2h,spreads,totals") -> pd.DataFrame:
     data = _get(
         f"/sports/{sport_key}/odds",
-        {"bookmakers": ",".join(books[:10]), "markets": "h2h,spreads,totals", "oddsFormat": "american"},
+        {"bookmakers": ",".join(books[:10]), "markets": markets, "oddsFormat": "american"},
     )
     return parse_game_odds(data)
 

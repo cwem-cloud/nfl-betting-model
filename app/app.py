@@ -112,7 +112,7 @@ with st.sidebar:
         with st.expander("Last run log"):
             st.code(runs["log"].iloc[0] or "")
 
-tabs = st.tabs(["🏈 NFL", "🎓 CFB", "🎯 TD Zone", "📊 Prop Hub", "📈 Line Market", "🧠 Sharp Inputs", "📚 History"])
+tabs = st.tabs(["🏈 NFL", "🎓 CFB", "🎯 TD Zone", "📊 Prop Hub", "📈 Line Market", "🧠 Sharp Inputs", "📚 History", "🛡️ Team Totals"])
 
 
 def pick_card(p: pd.Series) -> None:
@@ -492,3 +492,40 @@ with tabs[6]:
             "Price": ts["price"].map(fmt_american), "U (if bet)": ts["units"], "EV": (ts["ev"] * 100).round(1),
             "Close": ts["close_line"], "CLV pts": ts["clv_points"], "Status": ts["status"], "P/L": ts["profit_units"].round(2),
         }), hide_index=True, width="stretch")
+
+# ------------------------------------------------------------------ Team totals
+with tabs[7]:
+    from pocket_capper.market.team_totals import implied_team_totals, this_week
+
+    st.subheader("🛡️ Vegas Team Totals")
+    st.caption("Implied points per team from the consensus (median) spread and total. "
+               "Lowest Opp TT = best D/ST streaming matchup.")
+    if st.button("Pull live lines (2 API credits)"):
+        from pocket_capper.data import odds_api
+
+        try:
+            live = odds_api.game_odds(cfg["sports"]["nfl"]["odds_key"], cfg["books"]["compare"], markets="spreads,totals")
+            st.session_state["tt_odds"] = live
+            st.session_state["tt_src"] = f"live pull, {odds_api.LAST_USAGE.get('remaining')} credits left"
+        except Exception as e:
+            st.error(str(e))
+    odds = st.session_state.get("tt_odds")
+    src = st.session_state.get("tt_src")
+    if odds is None:  # free fallback: latest stored snapshot per book
+        snap = db.read(db.odds_snapshots, "WHERE sport = 'nfl' AND player IS NULL AND market IN ('spread', 'total')")
+        if not snap.empty:
+            snap["ts"] = pd.to_datetime(snap["fetched_at"], utc=True, format="ISO8601")
+            odds = snap.sort_values("ts").groupby(["event_id", "book", "market", "side"]).last().reset_index()
+            src = f"last stored snapshot ({snap['ts'].max():%a %m/%d %H:%M} UTC)"
+    tt = this_week(implied_team_totals(odds)) if odds is not None and not odds.empty else pd.DataFrame()
+    if tt.empty:
+        st.info("No lines for this week's games yet - hit Pull live lines.")
+    else:
+        st.dataframe(pd.DataFrame({
+            "D/ST": tt["team"],
+            "Matchup": [("vs " if v == "home" else "@ ") + o for v, o in zip(tt["venue"], tt["opp"])],
+            "Kickoff (ET)": tt["kickoff"].dt.tz_convert("America/New_York").dt.strftime("%a %-I:%M%p"),
+            "Spread": tt["spread"].map(lambda v: f"{v:+g}" if v else "PK"),
+            "Total": tt["total"], "Team TT": tt["team_total"], "Opp TT": tt["opp_total"], "Books": tt["books"],
+        }), hide_index=True, width="stretch")
+        st.caption(f"Source: {src}.")

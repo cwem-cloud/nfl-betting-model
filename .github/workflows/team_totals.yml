@@ -1,0 +1,21 @@
+name: team totals
+
+# On-demand Vegas implied team totals for this NFL week (D/ST streaming view).
+# Actions tab -> team totals -> Run workflow; the table shows on the run's summary page.
+on:
+  workflow_dispatch:
+
+jobs:
+  team-totals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python scripts/team_totals.py --markdown | tee -a "$GITHUB_STEP_SUMMARY"

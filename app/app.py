@@ -150,7 +150,7 @@ def pending_picks(sport: str, categories: tuple[str, ...], upcoming_only: bool =
     df = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
     if df.empty:
         return df
-    df = df[df["category"].isin(categories)]
+    df = df[df["category"].isin(categories) & ~db.is_tracking(df)]
     if upcoming_only:  # kicked-off picks wait in History until graded
         df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce", format="ISO8601") > pd.Timestamp.now(tz="UTC")]
     return df.sort_values(["units", "ev"], ascending=False)
@@ -404,6 +404,8 @@ with tabs[5]:
 with tabs[6]:
     st.subheader("📚 History")
     h = db.read(db.picks)
+    trk = h[db.is_tracking(h)] if not h.empty else h
+    h = h[~db.is_tracking(h)] if not h.empty else h
     if h.empty:
         st.info("No picks yet.")
     else:
@@ -468,3 +470,25 @@ with tabs[6]:
             r = show[(show["selection"] + " - " + show["matchup"]) == pick].iloc[0]
             st.markdown(r["rationale"] or "")
         st.download_button("Download history CSV", d.drop(columns=["kickoff_dt"]).to_csv(index=False), "pocket_capper_history.csv")
+    if not trk.empty:
+        st.markdown("### 🔬 Tracking only (not bet)")
+        st.caption("Markets that are switched off (CFB spreads/ML) are still logged, sized as if bet, so we can see "
+                   "whether they beat the closing line before turning them back on. Not in the record above.")
+        from pocket_capper.engine.grading import clv_summary
+
+        tg = trk[trk["status"].isin(["win", "loss", "push"])]
+        tw, tl, tp = (tg["status"] == "win").sum(), (tg["status"] == "loss").sum(), (tg["status"] == "push").sum()
+        tc = clv_summary(trk)
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Record", f"{tw}-{tl}-{tp}")
+        t2.metric("Units (if bet)", f"{tg['profit_units'].sum():+.2f}U")
+        t3.metric("Avg CLV (pts)", f"{tc['avg_pts']:+.2f}" if tc["n"] and tc["avg_pts"] == tc["avg_pts"] else "—")
+        t4.metric("Beat close", f"{tc['beat']:.0%}" if tc["n"] else "—")
+        tk = pd.to_datetime(trk["kickoff"], utc=True, errors="coerce", format="ISO8601")
+        ts = trk.assign(_k=tk).sort_values("_k", ascending=False)
+        st.dataframe(pd.DataFrame({
+            "Kickoff": ts["_k"].dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d %I:%M %p"),
+            "Sport": ts["sport"].str.upper(), "Type": ts["category"], "Matchup": ts["matchup"], "Play": ts["selection"],
+            "Price": ts["price"].map(fmt_american), "U (if bet)": ts["units"], "EV": (ts["ev"] * 100).round(1),
+            "Close": ts["close_line"], "CLV pts": ts["clv_points"], "Status": ts["status"], "P/L": ts["profit_units"].round(2),
+        }), hide_index=True, width="stretch")

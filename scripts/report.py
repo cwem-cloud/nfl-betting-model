@@ -15,6 +15,8 @@ p = db.read(db.picks)
 print(f"TOTAL PICKS IN DB: {len(p)}")
 if p.empty:
     raise SystemExit
+trk = p[db.is_tracking(p)].copy()  # switched-off markets, logged but not bet
+p = p[~db.is_tracking(p)].copy()
 p["kick"] = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
 p["price_s"] = p["price"].map(fmt_american)
 
@@ -60,3 +62,15 @@ if len(up):
     for _, r in up.sort_values(["units", "ev"], ascending=False).head(12).iterrows():
         print(f"\n### {r['selection']} {r['price_s']} ({r['units']:g}U) - {r['matchup']}")
         print(r["rationale"])
+
+if len(trk):
+    trk["kick"] = pd.to_datetime(trk["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
+    trk["price_s"] = trk["price"].map(fmt_american)
+    tg = trk[trk["status"].isin(["win", "loss", "push"])]
+    c = clv_summary(trk)
+    print(f"\n===== TRACKING ONLY, NOT BET ({len(trk)} picks, {len(tg)} graded) =====")
+    print(f"record {(tg['status'] == 'win').sum()}-{(tg['status'] == 'loss').sum()}-{(tg['status'] == 'push').sum()}"
+          f"  units if bet {tg['profit_units'].sum():+.2f}"
+          + (f"  CLV pts {c['avg_pts']:+.2f}  beat close {c['beat']:.0%}" if c["n"] else ""))
+    print(trk.sort_values("kick")[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev",
+                                   "close_line", "clv_points", "status", "profit_units"]].to_string(index=False))

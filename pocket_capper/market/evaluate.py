@@ -184,19 +184,20 @@ def evaluate_game(
     for c in candidates:
         net = mk.net_signal(c["signals"])
         cap = cfg["units"]["max_units"]
-        if c["market"] not in enabled:
-            c["qualifies"] = False
         u = _units(c["final_prob"], c["price"], c["push_prob"], cfg, net, cap) if c["qualifies"] else 0.0
         if u and stake != 1.0:
             u = round(u * stake * 4) / 4
             u = u if u >= cfg["units"]["min_units"] else 0.0
-        c["units"] = u
+        # Switched-off markets are still logged, sized as if bet, so we can see whether they'd beat the close.
+        track = c["market"] not in enabled
+        c["units"], c["track_units"] = (0.0, u) if track else (u, 0.0)
         c["net_signal"] = net
     # One play per family per game: spread and ML on the same team are the same bet.
     for family in (("spread", "ml"), ("total",)):
-        fam = [c for c in candidates if c["market"] in family and c["units"] > 0]
-        for c in sorted(fam, key=lambda c: -c["ev"])[1:]:
-            c["units"] = 0.0
+        for key in ("units", "track_units"):
+            fam = [c for c in candidates if c["market"] in family and c[key] > 0]
+            for c in sorted(fam, key=lambda c: -c["ev"])[1:]:
+                c[key] = 0.0
     row["flag"] = "; ".join(
         f"Model {c['edge_pts']:.1f} pts off market on {c['market']} - likely missing news, no bet"
         for c in candidates if c.get("too_big")

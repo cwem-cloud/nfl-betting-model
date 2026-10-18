@@ -222,3 +222,40 @@ def test_props_use_this_games_projection():
                          "side": side, "point": 15.5, "price": price, "fetched_at": "2030-01-01T12:00:00Z"})
     out = evaluate.evaluate_props(pd.DataFrame(rows), proj, config())
     assert len(out) == 1 and out.iloc[0]["opp"] == "LAC" and out.iloc[0]["projection"] == 12.0
+
+
+def test_switched_off_markets_are_tracked_not_bet(tmp_db, monkeypatch):
+    from pocket_capper.settings import config
+
+    sched = synthetic_schedule()
+    monkeypatch.setattr(nflverse, "schedules", lambda: sched.copy())
+    monkeypatch.setattr(nflverse, "team_game_epa", lambda seasons: pd.DataFrame())
+    monkeypatch.setattr(nflverse, "player_stats", lambda seasons: pd.DataFrame(columns=["season", "position"]))
+    monkeypatch.setattr(nflverse, "injuries", lambda season: pd.DataFrame())
+    monkeypatch.setattr(weather, "kickoff_weather", lambda *a, **k: None)
+    monkeypatch.setattr(splits, "fetch_dk_splits", lambda sport: pd.DataFrame(columns=splits.SPLIT_COLS))
+    monkeypatch.setattr(slate, "secret", lambda n, d=None: "test" if n == "ODDS_API_KEY" else None)
+    up = sched[(sched.season == 2026) & (sched.week == 4)]
+    rng = np.random.default_rng(3)
+    games = [(f"ev{i}", r.home_team, r.away_team, rng.normal(0, 6), 44 + rng.normal(0, 5), "2026-10-04T20:25:00Z")
+             for i, r in enumerate(up.itertuples())]
+    payload = fake_market.game_payload(games)
+    monkeypatch.setattr(odds_api, "_get", lambda path, params: payload)
+    monkeypatch.setitem(config()["sports"]["nfl"], "markets", ["total"])
+    monkeypatch.setitem(config()["exposure"], "nfl_games_units_per_day", 1.0)
+    # synthetic ratings sit far from the fake market; relax the sanity guards so sides qualify
+    monkeypatch.setitem(config()["edges"], "max_points_side", 30.0)
+    monkeypatch.setitem(config()["edges"], "max_ev_game", 1.0)
+    slate.run(("nfl",), include_props=False, now=NOW)
+    picks = tmp_db.read(tmp_db.picks)
+    trk = picks[tmp_db.is_tracking(picks)]
+    real = picks[~tmp_db.is_tracking(picks)]
+    assert len(trk) > 0 and set(trk["market"]) <= {"spread", "ml"}
+    assert (trk["units"] > 0).all() and trk["rationale"].str.startswith("**TRACKING ONLY").all()
+    assert set(real["market"]) <= {"total"}
+    assert real["units"].sum() <= 1.0 + 1e-9  # tracked units never eat the daily cap
+    # one tracked play per family per game (spread and ML on a game are the same bet)
+    assert not trk.groupby("game_id").size().gt(1).any()
+    # the second run refreshes, it doesn't duplicate
+    slate.run(("nfl",), include_props=False, now=NOW)
+    assert len(tmp_db.read(tmp_db.picks)) == len(picks)

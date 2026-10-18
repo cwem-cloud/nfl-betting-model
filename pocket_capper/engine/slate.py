@@ -97,8 +97,11 @@ def _manual_for(sport: str) -> pd.DataFrame:
     return db.read(db.sharp_plays, "WHERE sport = :s AND (status IS NULL OR status = 'pending')", {"s": sport})
 
 
-def _existing_pick_ids(sport: str) -> set[str]:
-    return set(db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})["pick_id"])
+def _existing_pick_ids(sport: str, real_only: bool = False) -> set[str]:
+    p = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
+    if real_only and not p.empty:
+        p = p[~db.is_tracking(p)]
+    return set(p["pick_id"]) if not p.empty else set()
 
 
 _OPPOSITE = {"home": "away", "away": "home", "over": "under", "under": "over"}
@@ -157,7 +160,8 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         split_df = split_df.assign(home_key=split_df["home"].map(name_of), away_key=split_df["away"].map(name_of))
     manual = _manual_for(sport)
     existing = _existing_pick_ids(sport)
-    rows, n, queue = [], 0, []
+    existing_real = _existing_pick_ids(sport, real_only=True)
+    rows, n, queue, tracked = [], 0, [], []
     for _, g in games.iterrows():
         pr = projs[projs["game_id"] == g["game_id"]]
         if pr.empty:
@@ -200,10 +204,15 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
             if p["pick_id"] in existing:  # already issued; refreshed below
                 best.append(f"{p['selection']} {fmt_american(c['price'])} (already on card)")
                 continue
-            if _opposite_ids(p["pick_id"]) & existing:  # never hedge against our own open play
+            if _opposite_ids(p["pick_id"]) & existing_real:  # never hedge against our own open play
                 continue
             # written after the whole slate is evaluated, best EV first, within the day's exposure budget
             queue.append((c, p, g, row, blind, context, best))
+        for c in sorted((c for c in cands if c.get("track_units", 0) > 0), key=lambda c: -c["ev"]):
+            p = _pick_record(sport, run_id, g, c, pr, {})
+            if p["pick_id"] not in existing:  # switched-off market: logged for evaluation, never bet
+                p.update(units=c["track_units"], tracking=1)
+                tracked.append((c, p, g, row, blind, context))
         # refresh every open pick on this game with the current line and its current EV
         for c in cands:
             pid = _pick_record(sport, run_id, g, c, pr, {})["pick_id"]
@@ -221,26 +230,33 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         if not budget.take(p["kickoff"], c["units"]):
             best.append(f"{p['selection']} {fmt_american(c['price'])} (skipped: daily exposure cap)")
             continue
-        if c["market"] == "spread":
-            dk_s = f"{p['selection']} {fmt_american(c['price'])}"
-            sharp_s = None if row["sharp_spread_home"] is None else f"{g['home']} {row['sharp_spread_home']:+g}"
-        elif c["market"] == "total":
-            dk_s = f"{p['selection']} {fmt_american(c['price'])}"
-            sharp_s = None if row["sharp_total"] is None else f"{row['sharp_total']:g}"
-        else:
-            dk_s, sharp_s = f"{p['selection']} {fmt_american(c['price'])}", None
-        p = _finalize_pick(p, blind, dk_s, sharp_s, context)
+        p = _finalize_pick(p, blind, *_market_summaries(c, p, g, row), context)
         db.upsert_pick(p)
         n += 1
         best.append(f"{p['selection']} {fmt_american(c['price'])} ({c['units']:g}U, {c['ev']:+.1%})")
+    for c, p, g, row, blind, context in tracked:
+        p = _finalize_pick(p, blind, *_market_summaries(c, p, g, row), context)
+        p["rationale"] = (f"**TRACKING ONLY - not a bet.** {sport.upper()} {c['market']} is switched off; "
+                          f"logged at {p['units']:g}U to measure it against the close.\n\n" + p["rationale"])
+        db.upsert_pick(p)
     for r in rows:  # best lists were filled in place after the rows were built
         if "_best" in r:
             b = r.pop("_best")
             r["best_play"] = " + ".join(b) if b else ("Flagged" if r.get("flag") else "No edge")
     out = pd.DataFrame(rows)
     db.save_board(run_id, sport, "games", out)
-    log(f"{sport.upper()}: {len(out)} games on the board, {n} new plays")
+    log(f"{sport.upper()}: {len(out)} games on the board, {n} new plays"
+        + (f" (+{len(tracked)} tracking-only)" if tracked else ""))
     return n
+
+
+def _market_summaries(c, p, g, row) -> tuple[str, str | None]:
+    dk_s = f"{p['selection']} {fmt_american(c['price'])}"
+    if c["market"] == "spread":
+        return dk_s, None if row["sharp_spread_home"] is None else f"{g['home']} {row['sharp_spread_home']:+g}"
+    if c["market"] == "total":
+        return dk_s, None if row["sharp_total"] is None else f"{row['sharp_total']:g}"
+    return dk_s, None
 
 
 class _DayBudget:
@@ -250,7 +266,7 @@ class _DayBudget:
         self.cap = cfg.get("exposure", {}).get(f"{sport}_{bucket}_units_per_day")
         cats = ("side", "total", "ml") if bucket == "games" else ("prop", "attd")
         p = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
-        p = p[p["category"].isin(cats)] if not p.empty else p
+        p = p[p["category"].isin(cats) & ~db.is_tracking(p)] if not p.empty else p
         self.used = {}
         for r in p.itertuples():
             d = self._day(r.kickoff)

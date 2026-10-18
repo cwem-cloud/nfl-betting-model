@@ -57,6 +57,7 @@ def verdict(r, cfg) -> tuple[str | None, float]:
 def main(dry: bool) -> None:
     cfg = config()
     p = db.read(db.picks, "WHERE status = 'pending'")
+    p = p[~db.is_tracking(p)]
     kick = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601")
     made = pd.to_datetime(p["created_at"], utc=True, errors="coerce", format="ISO8601")
     p = p[(kick > pd.Timestamp.now(tz="UTC")) & (made < RULES_CHANGED_AT)]

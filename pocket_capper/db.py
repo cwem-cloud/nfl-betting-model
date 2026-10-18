@@ -75,6 +75,7 @@ picks = Table(
     Column("latest_line", Float), Column("latest_price", Float), Column("latest_ev", Float),
     Column("close_line", Float), Column("close_price", Float), Column("clv_points", Float), Column("clv_prob", Float),
     Column("status", String), Column("result_value", Float), Column("profit_units", Float),
+    Column("tracking", Integer),  # 1 = tracked only, not bet (market switched off); sized as if bet
 )
 
 boards = Table(
@@ -179,6 +180,13 @@ def read(table: Table | str, where: str = "", params: dict | None = None) -> pd.
             if isinstance(c.type, Float) and c.name in df:
                 df[c.name] = pd.to_numeric(df[c.name], errors="coerce")
     return df
+
+
+def is_tracking(df: pd.DataFrame) -> pd.Series:
+    """Rows that are tracking-only picks (never on the card, never in the record)."""
+    if df.empty or "tracking" not in df:
+        return pd.Series(False, index=df.index)
+    return pd.to_numeric(df["tracking"], errors="coerce").fillna(0).astype(int) == 1
 
 
 def upsert_pick(p: dict) -> str:

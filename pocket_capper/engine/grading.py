@@ -81,7 +81,8 @@ def grade_all(log=print) -> dict:
         kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce", format="ISO8601")
         side = p.pick_id.split("|")[3]
         # CLV once the game has kicked off
-        if pd.notna(kickoff) and kickoff <= now and pd.isna(p.close_price):
+        # (alt-line rungs have no closing line of their own: the main market closes at a different number)
+        if pd.notna(kickoff) and kickoff <= now and pd.isna(p.close_price) and "|capper-alt@" not in p.pick_id:
             c = closing_price(p.sport, p.event_id, p.market if p.category not in ("prop", "attd") else p.market,
                               side, p.kickoff, p.player if p.category in ("prop", "attd") else None)
             if c is not None:

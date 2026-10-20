@@ -9,7 +9,7 @@ from pocket_capper import db
 
 pd.set_option("display.width", 220, "display.max_columns", 20)
 p = db.read(db.picks)
-p = p[~db.is_tracking(p)] if not p.empty else p
+p = p[~db.off_book(p)] if not p.empty else p
 g = p[p["status"].isin(["win", "loss", "push"])].copy()
 print(f"graded picks: {len(g)}")
 if g.empty:

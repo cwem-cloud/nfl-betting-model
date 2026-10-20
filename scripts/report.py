@@ -17,7 +17,8 @@ print(f"TOTAL PICKS IN DB: {len(p)}")
 if p.empty:
     raise SystemExit
 trk = p[db.is_tracking(p)].copy()  # switched-off markets, logged but not bet
-p = p[~db.is_tracking(p)].copy()
+cap = p[db.is_capper(p)].copy()    # the reasoning capper's own picks (own record)
+p = p[~db.off_book(p)].copy()
 p["kick"] = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
 p["price_s"] = p["price"].map(fmt_american)
 
@@ -100,3 +101,22 @@ if len(trk):
           + (f"  CLV pts {c['avg_pts']:+.2f}  beat close {c['beat']:.0%}" if c["n"] else ""))
     print(trk.sort_values("kick")[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev",
                                    "close_line", "clv_points", "status", "profit_units"]].to_string(index=False))
+
+if len(cap):
+    cap["kick"] = pd.to_datetime(cap["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
+    cap["price_s"] = cap["price"].map(fmt_american)
+    cg = cap[cap["status"].isin(["win", "loss", "push"])]
+    c = clv_summary(cap)
+    print(f"\n===== CAPPER ({len(cap)} picks, {len(cg)} graded) =====")
+    print(f"record {(cg['status'] == 'win').sum()}-{(cg['status'] == 'loss').sum()}-{(cg['status'] == 'push').sum()}"
+          f"  units {cg['profit_units'].sum():+.2f}" + (f"  beat close {c['beat']:.0%}" if c["n"] else ""))
+    co = cap[(cap["status"] == "pending") & (cap["kick"] >= pd.Timestamp.now(tz="America/New_York"))].sort_values("kick")
+    if len(co):
+        print(co[["kick", "matchup", "selection", "price_s", "units"]].to_string(index=False))
+        for _, r in co.iterrows():
+            print(f"\n### {r['selection']} {r['price_s']} ({r['units']:g}U) - {r['matchup']}\n{r['rationale']}")
+rv = db.read(db.capper_reviews)
+if len(rv):
+    print("\n===== CAPPER GAME READS (latest) =====")
+    for r in rv.sort_values("id", ascending=False).drop_duplicates("game_id").head(16).itertuples():
+        print(f"\n{r.matchup} ({r.model}): {r.read}\n  passed: {r.passes}")

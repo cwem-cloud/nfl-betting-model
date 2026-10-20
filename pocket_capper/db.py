@@ -6,7 +6,9 @@ Tables
   odds_snapshots  every price we have seen, per book — the line-movement history
   splits          bets% / money% snapshots
   sharp_plays     manual entries from sharp sources (e.g. Bambino) + their grading
-  picks           every official play, graded with closing line value
+  picks           every official play, graded with closing line value (source: model | capper)
+  capper_reviews  the reasoning capper's read on each game it analysed (picks and passes)
+  capper_notes    the capper's notebook: lessons rewritten from its own graded results
   boards          full slate output per run (game board, prop hub, TD zone) for the dashboard
 """
 from __future__ import annotations
@@ -76,6 +78,21 @@ picks = Table(
     Column("close_line", Float), Column("close_price", Float), Column("clv_points", Float), Column("clv_prob", Float),
     Column("status", String), Column("result_value", Float), Column("profit_units", Float),
     Column("tracking", Integer),  # 1 = tracked only, not bet (market switched off); sized as if bet
+    Column("source", String),     # null/"model" = the EV model; "capper" = the reasoning capper (own record)
+)
+
+capper_reviews = Table(
+    "capper_reviews", meta,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("created_at", String), Column("sport", String), Column("game_id", String),
+    Column("matchup", String), Column("kickoff", String), Column("model", String),
+    Column("read", Text), Column("passes", Text), Column("payload", Text),
+)
+
+capper_notes = Table(  # the capper's notebook: lessons it has written from its own graded results
+    "capper_notes", meta,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("created_at", String), Column("graded_count", Integer), Column("notes", Text),
 )
 
 boards = Table(
@@ -187,6 +204,17 @@ def is_tracking(df: pd.DataFrame) -> pd.Series:
     if df.empty or "tracking" not in df:
         return pd.Series(False, index=df.index)
     return pd.to_numeric(df["tracking"], errors="coerce").fillna(0).astype(int) == 1
+
+
+def is_capper(df: pd.DataFrame) -> pd.Series:
+    if df.empty or "source" not in df:
+        return pd.Series(False, index=df.index)
+    return df["source"].fillna("") == "capper"
+
+
+def off_book(df: pd.DataFrame) -> pd.Series:
+    """Rows outside the model's own card and record: tracking-only picks and the capper's picks."""
+    return is_tracking(df) | is_capper(df)
 
 
 def upsert_pick(p: dict) -> str:

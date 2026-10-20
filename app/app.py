@@ -112,7 +112,8 @@ with st.sidebar:
         with st.expander("Last run log"):
             st.code(runs["log"].iloc[0] or "")
 
-tabs = st.tabs(["🏈 NFL", "🎓 CFB", "🎯 TD Zone", "📊 Prop Hub", "📈 Line Market", "🧠 Sharp Inputs", "📚 History"])
+tabs = st.tabs(["🏈 NFL", "🎓 CFB", "🎯 TD Zone", "📊 Prop Hub", "📈 Line Market", "🧠 Sharp Inputs", "📚 History",
+                "🧑‍🏫 Capper"])
 
 
 def pick_card(p: pd.Series) -> None:
@@ -150,7 +151,7 @@ def pending_picks(sport: str, categories: tuple[str, ...], upcoming_only: bool =
     df = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
     if df.empty:
         return df
-    df = df[df["category"].isin(categories) & ~db.is_tracking(df)]
+    df = df[df["category"].isin(categories) & ~db.off_book(df)]
     if upcoming_only:  # kicked-off picks wait in History until graded
         df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce", format="ISO8601") > pd.Timestamp.now(tz="UTC")]
     return df.sort_values(["units", "ev"], ascending=False)
@@ -447,7 +448,7 @@ with tabs[6]:
     st.subheader("📚 History")
     h = db.read(db.picks)
     trk = h[db.is_tracking(h)] if not h.empty else h
-    h = h[~db.is_tracking(h)] if not h.empty else h
+    h = h[~db.off_book(h)] if not h.empty else h
     if h.empty:
         st.info("No picks yet.")
     else:
@@ -534,3 +535,57 @@ with tabs[6]:
             "Price": ts["price"].map(fmt_american), "U (if bet)": ts["units"], "EV": (ts["ev"] * 100).round(1),
             "Close": ts["close_line"], "CLV pts": ts["clv_points"], "Status": ts["status"], "P/L": ts["profit_units"].round(2),
         }), hide_index=True, width="stretch")
+
+
+# ------------------------------------------------------------------ Capper
+with tabs[7]:
+    st.subheader("🧑‍🏫 The Capper")
+    st.caption("A second handicapper that reasons from ball knowledge instead of EV: role changes, injuries on both "
+               "sides, matchups, game script, spots and the latest news it looks up itself. It sees the model's numbers "
+               "but makes its own calls (it can disagree, or pass), picks only from real DK prices, and keeps its own "
+               "record. After every few graded picks it rewrites its notebook of lessons.")
+    allp = db.read(db.picks)
+    cap = allp[db.is_capper(allp)] if not allp.empty else allp
+    from pocket_capper.engine.grading import clv_summary
+
+    g = cap[cap["status"].isin(["win", "loss", "push"])] if not cap.empty else cap
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Record", f"{(g['status'] == 'win').sum()}-{(g['status'] == 'loss').sum()}-{(g['status'] == 'push').sum()}" if not g.empty else "0-0-0")
+    k2.metric("Units", f"{g['profit_units'].sum():+.2f}U" if not g.empty else "0U")
+    k3.metric("ROI", f"{g['profit_units'].sum() / g['units'].sum():+.1%}" if not g.empty and g["units"].sum() else "—")
+    cc = clv_summary(cap) if not cap.empty else {"n": 0}
+    k4.metric("Beat close", f"{cc['beat']:.0%}" if cc["n"] else "—")
+    if cap.empty:
+        st.info("No capper picks yet. It reads each NFL game once, within 24 hours of kickoff "
+                "(needs the ANTHROPIC_API_KEY secret).")
+    else:
+        kick = pd.to_datetime(cap["kickoff"], utc=True, errors="coerce", format="ISO8601")
+        open_ = cap[(cap["status"] == "pending") & (kick > pd.Timestamp.now(tz="UTC"))].assign(_k=kick).sort_values("_k")
+        st.markdown(f"#### Open picks ({len(open_)}, {open_['units'].sum():g}U)")
+        for _, p in open_.iterrows():
+            when = p["_k"].tz_convert("America/New_York").strftime("%a %I:%M %p")
+            st.markdown(f"**{p['selection']} {fmt_american(p['price'])}** · {p['units']:g}U · {p['matchup']} · {when}")
+            with st.expander("Thesis"):
+                st.markdown(p["rationale"] or "")
+        if not g.empty:
+            with st.expander(f"Graded ({len(g)})"):
+                gk = pd.to_datetime(g["kickoff"], utc=True, errors="coerce", format="ISO8601")
+                st.dataframe(pd.DataFrame({
+                    "Kickoff": gk.dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d"), "Matchup": g["matchup"],
+                    "Play": g["selection"], "Price": g["price"].map(fmt_american), "U": g["units"],
+                    "Result": g["result_value"], "Status": g["status"], "P/L": g["profit_units"].round(2),
+                    "CLV pts": g["clv_points"],
+                }).sort_values("Kickoff", ascending=False), hide_index=True, width="stretch")
+    rv = db.read(db.capper_reviews)
+    if not rv.empty:
+        st.markdown("#### Game reads")
+        rv = rv.sort_values("id", ascending=False).drop_duplicates("game_id").head(16)
+        for r in rv.itertuples():
+            with st.expander(f"{r.matchup} · {str(r.kickoff)[:16]}"):
+                st.markdown(r.read or "")
+                if r.passes:
+                    st.caption(f"Passed on: {r.passes}")
+    nb = db.read(db.capper_notes)
+    with st.expander("📓 Notebook (lessons from its own graded picks)"):
+        st.markdown(nb.sort_values("id").iloc[-1]["notes"] if not nb.empty else
+                    "_Empty until enough picks are graded; it rewrites this every 6 graded picks._")

@@ -133,6 +133,18 @@ props:
     max_ev: 0.35              # bigger "edges" on alt lines usually mean the model is missing news
     min_prob: 0.04            # don't price rungs below a 4% chance
 
+capper:                       # the reasoning capper (Claude): its own reads and picks, its own record
+  enabled: true               # needs the ANTHROPIC_API_KEY secret
+  window_hours: 24            # read games kicking off within this window (late = fresher news)
+  reread_hours: 30            # i.e. once per game (cost control)
+  web_searches: 5             # news lookups per game
+  effort: high
+  max_continuations: 4
+  max_picks_per_game: 3
+  max_units: 1.0
+  units_per_day: 4.0
+  notebook_every: 6           # rewrite its notebook after this many newly graded picks
+
 run:
   lookahead_days: 7
   claude_model: claude-opus-5-5   # only used when ANTHROPIC_API_KEY is set

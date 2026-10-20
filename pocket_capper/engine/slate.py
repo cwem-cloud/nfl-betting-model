@@ -47,6 +47,14 @@ def run(sports=("nfl", "cfb"), include_props: bool = True, progress=None, now: d
             log(f"{sport.upper()} failed: {e}")
             summary["errors"].append(f"{sport}: {e}")
             traceback.print_exc()
+    if "nfl" in sports:
+        try:  # the reasoning capper reads the boards this run just wrote
+            from pocket_capper.engine import capper
+
+            summary["capper_picks"] = capper.run(run_id, cfg, log, now)
+        except Exception as e:
+            log(f"Capper failed: {e}")
+            traceback.print_exc()
     with db.engine().begin() as conn:
         conn.execute(
             db.runs.update().where(db.runs.c.run_id == run_id).values(
@@ -100,7 +108,7 @@ def _manual_for(sport: str) -> pd.DataFrame:
 def _existing_pick_ids(sport: str, real_only: bool = False) -> set[str]:
     p = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
     if real_only and not p.empty:
-        p = p[~db.is_tracking(p)]
+        p = p[~db.off_book(p)]
     return set(p["pick_id"]) if not p.empty else set()
 
 
@@ -266,7 +274,7 @@ class _DayBudget:
         self.cap = cfg.get("exposure", {}).get(f"{sport}_{bucket}_units_per_day")
         cats = ("side", "total", "ml") if bucket == "games" else ("prop", "attd")
         p = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
-        p = p[p["category"].isin(cats) & ~db.is_tracking(p)] if not p.empty else p
+        p = p[p["category"].isin(cats) & ~db.off_book(p)] if not p.empty else p
         self.used = {}
         for r in p.itertuples():
             d = self._day(r.kickoff)
@@ -369,8 +377,8 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
     plays = nflverse.pbp([season])
     pproj = nfl_props.project_players(ps, plays, season, week, tp, out_ids)
     log(f"Player projections: {len(pproj)} players ({len(out_ids)} ruled out/doubtful removed)")
+    db.save_board(run_id, "nfl", "projections_players", pproj)
     if odds.empty or pproj.empty:
-        db.save_board(run_id, "nfl", "projections_players", pproj)
         return 0
     frames = []
     for ev_id in odds["event_id"].unique():

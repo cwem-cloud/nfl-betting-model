@@ -27,6 +27,19 @@ def test_dashboard_renders(tmp_db):
     tmp_db.upsert_pick(dict(base, pick_id="nfl|g0|spread|away|", selection="BUF +3", kickoff="2025-01-01T18:00:00Z"))
     tmp_db.update_pick("nfl|g0|spread|away|", status="win", profit_units=0.91, clv_prob=0.02)
 
+    # the capper's own picks, a game read and its notebook (Capper tab)
+    tmp_db.upsert_pick(dict(base, pick_id="nfl|g1|player_receptions|over|p1|capper@2.5", category="prop",
+                            market="player_receptions", selection="Josh Allen Over 2.5 Receptions", source="capper",
+                            kickoff="2030-01-01T18:00:00Z", model_prob=None, final_prob=None, ev=None,
+                            rationale="**Capper:** thesis"))
+    tmp_db.upsert_pick(dict(base, pick_id="nfl|g0|spread|home|capper@-3", selection="KC -3", source="capper",
+                            kickoff="2025-01-01T18:00:00Z", ev=None))
+    tmp_db.update_pick("nfl|g0|spread|home|capper@-3", status="loss", profit_units=-1.0)
+    tmp_db.insert_df(tmp_db.capper_reviews, pd.DataFrame([{"created_at": "2029-12-31T12:00:00+00:00", "sport": "nfl",
+        "game_id": "g1", "matchup": "BUF @ KC", "kickoff": "2030-01-01T18:00:00Z", "model": "claude-opus-5-5",
+        "read": "Read.", "passes": "Side.", "payload": "{}"}]))
+    tmp_db.insert_df(tmp_db.capper_notes, pd.DataFrame([{"created_at": "2029-12-31", "graded_count": 6, "notes": "1. Lesson"}]))
+
     at = AppTest.from_file("../app/app.py", default_timeout=60).run()
     assert not at.exception, at.exception
     text = " ".join(m.value for m in at.markdown)

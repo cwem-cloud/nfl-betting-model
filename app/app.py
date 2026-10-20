@@ -271,6 +271,48 @@ with tabs[3]:
         }), hide_index=True, width="stretch")
         st.caption(f"As of {as_of} UTC. Projections are blind (built from usage, efficiency, opponent and the blind game script).")
 
+    # ---------------- Ladders
+    st.markdown("### 🪜 Ladders")
+    lad, lad_as_of = db.latest_board("nfl", "ladder")
+    if lad.empty:
+        st.info("No ladder board yet: it's built on the next run with props.")
+    else:
+        from pocket_capper.models.nfl_props import STAT_LABEL
+
+        st.caption("Fair odds for each alt-line rung, priced from the same market-anchored number as the main prop. "
+                   "✅ = DraftKings pays more than fair. **Situation** is where ladder value usually hides: work freed "
+                   "up by teammates who are out, players returning from a missed game, and missing defensive starters. "
+                   "Informational: ladders are never added to the card or the record.")
+        lad["game"] = lad["matchup"].fillna(lad["team"] + " vs " + lad["opp"])
+        g1, g2, g3 = st.columns([2, 2, 1])
+        games_l = sorted(lad["game"].unique())
+        game = g1.selectbox("Game", games_l, key="lad_game")
+        mk = g2.multiselect("Market", sorted(lad["stat"].unique()), format_func=lambda s: STAT_LABEL.get(s, s), key="lad_mk")
+        value_only = g3.toggle("Value rungs only", value=False, key="lad_val")
+        d = lad[lad["game"] == game]
+        if mk:
+            d = d[d["stat"].isin(mk)]
+        sit = d[d["context"].fillna("") != ""].drop_duplicates(["player", "context"])
+        if not sit.empty:
+            with st.expander(f"Situations in this game ({sit['player'].nunique()} players)", expanded=True):
+                for r in sit.itertuples():
+                    st.markdown(f"- **{r.player}** ({r.position}, {r.team}): {r.context}")
+        best = d.groupby(["player", "stat"])["ev"].max().fillna(-1).rename("best").reset_index()
+        d = d.merge(best, on=["player", "stat"]).sort_values(["best", "player", "stat", "rung"], ascending=[False, True, True, True])
+        if value_only:
+            d = d[d["value"]]
+        st.dataframe(pd.DataFrame({
+            "": d["value"].map({True: "✅", False: ""}),
+            "Player": d["player"], "Team": d["team"], "Market": d["stat"].map(STAT_LABEL),
+            "Rung": d["rung"].astype(str) + "+", "Main line": d["main_line"],
+            "Mkt expects": d["market_mean"].round(1), "We project": d["projection"].round(1),
+            "Model %": (d["model_prob"] * 100).round(0), "Fair": d["fair_odds"].map(fmt_american),
+            "DK": d["dk_price"].map(lambda x: fmt_american(x) if pd.notna(x) else "-"),
+            "EV": d["ev"].map(lambda x: f"{x:+.0%}" if pd.notna(x) else ""),
+            "Situation": d["context"].fillna(""),
+        }), hide_index=True, width="stretch", height=480)
+        st.caption(f"As of {lad_as_of} UTC. Take a rung only at or above its Fair price; ladder rungs move together, so size them small.")
+
 # ------------------------------------------------------------------ Line Market
 with tabs[4]:
     st.subheader("📈 Line Market")

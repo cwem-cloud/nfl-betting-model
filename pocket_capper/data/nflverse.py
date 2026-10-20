@@ -62,6 +62,16 @@ def player_stats(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def snap_counts(season: int) -> pd.DataFrame:
+    """PFR snap counts per player-game (offense/defense/special-teams share)."""
+    try:
+        path = cached_download(f"{BASE}/snap_counts/snap_counts_{season}.parquet", f"nfl_snaps_{season}.parquet", 6)
+        return pd.read_parquet(path, columns=["season", "week", "player", "position", "team",
+                                              "offense_pct", "defense_pct"])
+    except Exception:
+        return pd.DataFrame()
+
+
 def injuries(season: int) -> pd.DataFrame:
     try:
         path = cached_download(f"{BASE}/injuries/injuries_{season}.parquet", f"nfl_inj_{season}.parquet", 3)

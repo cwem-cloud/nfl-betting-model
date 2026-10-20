@@ -127,6 +127,11 @@ props:
     pass_yds: 150
   nfl_markets: [player_pass_yds, player_pass_tds, player_pass_attempts, player_rush_yds, player_rush_attempts, player_receptions, player_reception_yds, player_anytime_td]
   min_games: 2
+  ladder:                     # alt-line ladders on the Prop Hub (informational, never auto-bet)
+    enabled: true
+    min_ev: 0.05              # highlight a rung only when DK pays at least 5% over fair
+    max_ev: 0.35              # bigger "edges" on alt lines usually mean the model is missing news
+    min_prob: 0.04            # don't price rungs below a 4% chance
 
 run:
   lookahead_days: 7

@@ -13,3 +13,4 @@ plotly>=5.20
 anthropic>=0.40
 psycopg[binary]>=3.1
 pytest>=8
+claude-agent-sdk>=0.2

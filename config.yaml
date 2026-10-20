@@ -41,6 +41,9 @@ sports:
     total_shrink: 0.87
     margin_stretch: 1.0           # slope fit said 1.12, but it hurt ATS out-of-sample (47.4% -> 44.9% at 3+ pts); left off
     primetime_total: -1.15
+  nba:                        # no quant model yet: the capper handicaps NBA from the market + its own research
+    odds_key: basketball_nba
+    lookahead_hours: 36
   cfb:
     odds_key: americanfootball_ncaaf
     decay_half_life_weeks: 6
@@ -144,6 +147,12 @@ capper:                       # the reasoning capper (Claude): its own reads and
   max_units: 1.0
   units_per_day: 4.0
   notebook_every: 6           # rewrite its notebook after this many newly graded picks
+  backend: auto               # auto = API key if set, else subscription token (CLAUDE_CODE_OAUTH_TOKEN) via Agent SDK
+  sdk_max_turns: 16
+  nba:                        # per-sport overrides
+    window_hours: 12          # same-day games only (late injury news)
+    max_picks_per_game: 2
+    units_per_day: 3.0
 
 run:
   lookahead_days: 7

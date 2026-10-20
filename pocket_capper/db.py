@@ -93,6 +93,7 @@ capper_notes = Table(  # the capper's notebook: lessons it has written from its 
     "capper_notes", meta,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("created_at", String), Column("graded_count", Integer), Column("notes", Text),
+    Column("sport", String),
 )
 
 boards = Table(

@@ -77,6 +77,7 @@ def grade_all(log=print) -> dict:
                    for k in picks.loc[picks["sport"] == "cfb", "kickoff"].dropna()}
     res_cfb = _results_cfb(cfb_seasons) if cfb_seasons and secret("CFBD_API_KEY") else pd.DataFrame()
     ps = pd.DataFrame()
+    nba_cache: dict = {}
     for p in picks.itertuples():
         kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce", format="ISO8601")
         side = p.pick_id.split("|")[3]
@@ -94,7 +95,15 @@ def grade_all(log=print) -> dict:
                                clv_prob=om.american_to_prob(c["price"]) - om.american_to_prob(p.price))
                 stats["clv_recorded"] += 1
         # results
-        if p.category in ("side", "total", "ml"):
+        if p.sport == "nba":
+            got = _nba_result(p, side, kickoff, now, nba_cache)
+            if got is None:
+                continue
+            status, v = got
+            if status == "void":
+                db.update_pick(p.pick_id, status="void", profit_units=0.0)
+                continue
+        elif p.category in ("side", "total", "ml"):
             res = res_nfl if p.sport == "nfl" else res_cfb
             if res.empty:
                 continue
@@ -126,6 +135,34 @@ def grade_all(log=print) -> dict:
     grade_sharp_plays(res_nfl, res_cfb)
     log(f"Graded {stats['graded']} picks, CLV on {stats['clv_recorded']}")
     return stats
+
+
+def _nba_result(p, side: str, kickoff, now, cache: dict):
+    """(status, value) for a finished NBA pick, ("void", None) if the player didn't play, None if not final yet."""
+    from pocket_capper.data import nba
+    from pocket_capper.data.teams import norm_player
+
+    if pd.isna(kickoff) or kickoff > now - pd.Timedelta(hours=2):
+        return None
+    date, away, home = str(p.game_id).split("_")
+    try:
+        sb = cache.setdefault(("sb", date), nba.scoreboard(date))
+    except Exception:
+        return None
+    ev = next((e for e in sb if e["away"] == away and e["home"] == home), None)
+    if ev is None or not ev["completed"]:
+        return None
+    if p.category in ("side", "total", "ml"):
+        return grade_side(p.market, side, p.line, ev["home_pts"], ev["away_pts"])
+    try:
+        box = cache.setdefault(("box", ev["espn_id"]), nba.box_score(ev["espn_id"]))
+    except Exception:
+        return None
+    row = box[box["key"] == norm_player(p.player)] if not box.empty else box
+    if row.empty:
+        return "void", None
+    v = nba.stat_value(p.market, row.iloc[0])
+    return ("win" if ((v > p.line) if side == "over" else (v < p.line)) else "loss"), v
 
 
 def grade_sharp_plays(res_nfl: pd.DataFrame, res_cfb: pd.DataFrame) -> None:

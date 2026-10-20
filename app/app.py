@@ -564,7 +564,7 @@ with tabs[7]:
         st.markdown(f"#### Open picks ({len(open_)}, {open_['units'].sum():g}U)")
         for _, p in open_.iterrows():
             when = p["_k"].tz_convert("America/New_York").strftime("%a %I:%M %p")
-            st.markdown(f"**{p['selection']} {fmt_american(p['price'])}** · {p['units']:g}U · {p['matchup']} · {when}")
+            st.markdown(f"**{p['selection']} {fmt_american(p['price'])}** · {p['units']:g}U · {p['sport'].upper()} {p['matchup']} · {when}")
             with st.expander("Thesis"):
                 st.markdown(p["rationale"] or "")
         if not g.empty:

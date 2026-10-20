@@ -7,13 +7,14 @@ on:
     - cron: "45 15 * * 0"           # Sunday re-run 11:45 ET, after inactives
     - cron: "0 1,4,13,17,20,23 * * 4,5,6,0,1"   # odds/splits snapshots for line movement
     - cron: "0 12 * * 2"            # Tuesday grading sweep
+    - cron: "45 21 * * *"           # NBA daily 5:45 ET: grade, market + props, capper (after the 5:30 injury report)
   workflow_dispatch:
     inputs:
       task:
-        description: "slate | snapshot | grade | tune-cfb | backtest-cfb"
+        description: "slate | snapshot | grade | nba | tune-cfb | backtest-cfb"
         default: slate
       sports:
-        description: "nfl,cfb"
+        description: "nfl,cfb (or nba)"
         default: "nfl,cfb"
       props:
         description: "include NFL props (true/false)"
@@ -34,6 +35,7 @@ jobs:
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # capper via Agent SDK (subscription)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +57,7 @@ jobs:
             case "${{ github.event.schedule }}" in
               "0 1,4,13,17,20,23 * * 4,5,6,0,1") T=snapshot ;;
               "0 12 * * 2") T=grade ;;
+              "45 21 * * *") T=nba ;;
               *) T=slate ;;
             esac
           fi
@@ -64,19 +67,23 @@ jobs:
           SPORTS: ${{ github.event.inputs.sports || 'nfl,cfb' }}
           PROPS: ${{ github.event.inputs.props || 'true' }}
         run: |
-          case "$SPORTS" in nfl|cfb|nfl,cfb|cfb,nfl) ;; *) SPORTS=nfl,cfb ;; esac
+          case "$SPORTS" in nfl|cfb|nba|nfl,cfb|cfb,nfl|nfl,cfb,nba|nfl,nba) ;; *) SPORTS=nfl,cfb ;; esac
           if [ "$PROPS" = "false" ]; then python scripts/run_slate.py --sports "$SPORTS" --no-props
           else python scripts/run_slate.py --sports "$SPORTS"; fi
       - if: steps.task.outputs.task == 'snapshot'
         run: python scripts/snapshot_odds.py
       - if: steps.task.outputs.task == 'grade'
         run: python scripts/grade.py
+      - if: steps.task.outputs.task == 'nba'
+        run: |
+          python scripts/grade.py
+          python scripts/run_slate.py --sports nba
       - if: steps.task.outputs.task == 'backtest-cfb'
         run: python scripts/backtest.py --cfb --seasons 2023,2024,2025
       - if: steps.task.outputs.task == 'tune-cfb'
         run: python scripts/backtest.py --cfb --tune --seasons 2024,2025
       - name: Commit history (SQLite mode only)
-        if: env.DATABASE_URL == '' && contains(fromJSON('["slate","snapshot","grade"]'), steps.task.outputs.task)
+        if: env.DATABASE_URL == '' && contains(fromJSON('["slate","snapshot","grade","nba"]'), steps.task.outputs.task)
         run: |
           git config user.name "pocket-capper-bot"
           git config user.email "pocket-capper-bot@users.noreply.github.com"

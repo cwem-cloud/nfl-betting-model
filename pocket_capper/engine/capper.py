@@ -33,27 +33,45 @@ ALT_TO_MAIN = {
     "player_pass_yds_alternate": "player_pass_yds",
 }
 
-SYSTEM = """You are the reasoning capper for Pocket Capper, an NFL betting model. You work next to a \
-quantitative EV model. The model is good at prices; your job is ball knowledge: reading situations \
-the box scores and the market have not caught up to.
-
-Things that create real edges (look for them, and say which one a pick rests on):
-- Role changes: who inherits targets/carries when a teammate is out, a player returning from a missed \
+EDGES = {
+    "nfl": """- Role changes: who inherits targets/carries when a teammate is out, a player returning from a missed \
 game whose recent numbers are depressed, a backup QB changing target distribution, a new play-caller.
 - Matchups: a backup or third-string corner forced into the lineup, a missing run-stopper or pass \
 rusher, a slot receiver against a weak nickel, a defense that funnels production to RBs or TEs.
 - Game script: a big favourite leaning on the run late, a trailing team throwing, pace, weather \
 (wind hurts deep passing and kicking more than rushing).
+- Spots: short weeks, travel, lookahead/letdown, division familiarity.""",
+    "nba": """- Availability: stars ruled out or questionable (NBA injury reports change up to tip-off; check the latest), \
+minutes restrictions after injury, load management on the second night of a back-to-back.
+- Usage redistribution: when a high-usage player sits, who absorbs shots, touches and assists (often the \
+secondary ball-handler and the starter promoted into his minutes); rotation changes from the latest games.
+- Matchups and pace: possessions per game for both teams, opponent defence by position (rim protection, \
+perimeter defence), rebounding gaps, three-point volume against teams that allow threes.
+- Blowout risk: big spreads cut starters' minutes in the fourth quarter (hurts overs on starters, helps bench).
+- Spots: back-to-backs, 3-in-4 nights, long road trips, altitude in Denver/Utah, revenge/rivalry games.""",
+}
+SPORT_NAME = {"nfl": "NFL", "nba": "NBA"}
+NOTEBOOK_HEADER = "## Your notebook (lessons from your own graded picks)\n"
+
+
+def system_prompt(sport: str) -> str:
+    model_line = ("You work next to a quantitative EV model. The model is good at prices; your job is ball knowledge: "
+                  "reading situations the box scores and the market have not caught up to.") if sport == "nfl" else (
+                  "There is no quantitative model for this sport yet: you are the handicapper. Use the market data "
+                  "in the dossier and your own research.")
+    return f"""You are the reasoning capper for Pocket Capper, a {SPORT_NAME[sport]} betting model. {model_line}
+
+Things that create real edges (look for them, and say which one a pick rests on):
+{EDGES[sport]}
 - Market psychology: overs and favourites carry public money, recency bias after a big or quiet game, \
-lines that have not moved despite news, stale numbers at DK versus the sharp books.
-- Spots: short weeks, travel, lookahead/letdown, division familiarity.
+lines that have not moved despite news, stale numbers at DK versus other books.
 
 Discipline:
 - Use web search to check the latest news before you commit: injury designations and inactives, \
-practice reports, beat-reporter notes on roles and snap plans, weather. Prefer recent sources.
+practice/shootaround reports, beat-reporter notes on roles and minutes, weather where it matters. Prefer recent sources.
 - Only pick from the offers listed in the dossier, by offer id. The price you get is the DK price shown.
-- The model's numbers are an input, not an order. Agreeing with it is fine; disagreeing is fine when \
-you can say what it is missing. Never pick something just because the EV column is positive.
+- The model's numbers, where given, are an input, not an order. Agreeing with it is fine; disagreeing is fine \
+when you can say what it is missing. Never pick something just because an EV column is positive.
 - Passing is a good outcome. Most games deserve zero or one pick; never more than three.
 - Size in units from 0.25 to 1.0: 0.25 for a lean or a ladder long shot, 0.5 standard, 0.75-1.0 only \
 when several independent reasons line up and the price is right. Ladder rungs above the first should \
@@ -61,7 +79,9 @@ be small; rungs on the same player win and lose together.
 - Write theses a sharp bettor would respect: specific, checkable, no hype, no guarantees.
 - Read your notebook. It holds lessons from your own graded picks; apply them or say why not.
 
-Finish by calling submit_card exactly once."""
+Finish by calling submit_card exactly once.
+
+{NOTEBOOK_HEADER}{notebook(sport)}"""
 
 SUBMIT_TOOL = {
     "name": "submit_card",
@@ -296,21 +316,122 @@ def _client():
     return anthropic.Anthropic(api_key=secret("ANTHROPIC_API_KEY"))
 
 
-def notebook() -> str:
+def backend(cfg: dict) -> str | None:
+    """Which brain to use: an Anthropic API key (billed per token), or a Claude subscription token through the
+    Agent SDK (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`; draws on the subscription's usage limits).
+    An API key always wins when present - Claude Code itself bills the key if both are set."""
+    want = cfg.get("capper", {}).get("backend", "auto")
+    has_key, has_token = bool(secret("ANTHROPIC_API_KEY")), bool(secret("CLAUDE_CODE_OAUTH_TOKEN"))
+    if want == "api" or (want == "auto" and has_key):
+        return "api" if has_key else None
+    if want in ("agent_sdk", "auto") and has_token and not has_key:
+        return "agent_sdk"
+    return None
+
+
+class ApiBrain:
+    """Claude API: web search server tool + a strict submit tool."""
+
+    name = "api"
+
+    def __init__(self, client=None):
+        self.client = client or _client()
+
+    def card(self, system: str, dossier: str, cfg: dict):
+        return ask_capper(self.client, dossier, cfg, system=system)
+
+    def notes(self, prompt: str, cfg: dict) -> str | None:
+        resp = self.client.beta.messages.create(
+            model=cfg["run"]["claude_model"], max_tokens=16000,
+            system="You are the reasoning capper reviewing your own track record honestly.",
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": "high", "format": {"type": "json_schema", "schema": NOTEBOOK_SCHEMA}},
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        )
+        if resp.stop_reason == "refusal":
+            return None
+        return json.loads(next(b.text for b in resp.content if b.type == "text"))["notes"]
+
+
+class SdkBrain:
+    """Claude Agent SDK (bundled Claude Code CLI): only WebSearch/WebFetch available, JSON-schema output."""
+
+    name = "agent_sdk"
+
+    def _run(self, prompt: str, system: str, schema: dict, cfg: dict, tools: list[str], max_turns: int):
+        import asyncio
+        import tempfile
+
+        import os
+
+        from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ.pop("ANTHROPIC_API_KEY", None)  # an empty secret would still override the subscription token
+        opts = ClaudeAgentOptions(
+            system_prompt=system, model=cfg["run"]["claude_model"], tools=tools, allowed_tools=tools,
+            permission_mode="dontAsk", setting_sources=[], cwd=tempfile.mkdtemp(prefix="capper-"),
+            output_format={"type": "json_schema", "schema": schema}, max_turns=max_turns,
+            effort=cfg.get("capper", {}).get("effort", "high"),
+        )
+
+        async def go():
+            res = None
+            async for m in query(prompt=prompt, options=opts):
+                if isinstance(m, ResultMessage):
+                    res = m
+            return res
+
+        res = asyncio.run(go())
+        if res is None:
+            return None, "no result"
+        if res.subtype != "success" or not res.structured_output:
+            return None, f"{res.subtype}: {res.errors or res.result or ''}"[:300]
+        return res.structured_output, cfg["run"]["claude_model"]
+
+    def card(self, system: str, dossier: str, cfg: dict):
+        ccfg = cfg.get("capper", {})
+        sys_ = system.replace("Finish by calling submit_card exactly once.",
+                              f"Use WebSearch (at most {ccfg.get('web_searches', 5)} searches) for the latest news, "
+                              "then give your final answer in the required JSON format.")
+        out, served = self._run(dossier, sys_, SUBMIT_TOOL["input_schema"], cfg, ["WebSearch", "WebFetch"],
+                                int(ccfg.get("sdk_max_turns", 16)))
+        if out is None:
+            return None, served
+        try:
+            return CapperCard.model_validate(out), served
+        except ValidationError as e:
+            return None, f"invalid card: {e}"
+
+    def notes(self, prompt: str, cfg: dict) -> str | None:
+        out, _ = self._run(prompt, "You are the reasoning capper reviewing your own track record honestly.",
+                           NOTEBOOK_SCHEMA, cfg, [], 3)
+        return None if out is None else out.get("notes")
+
+
+def make_brain(cfg: dict):
+    b = backend(cfg)
+    return ApiBrain() if b == "api" else SdkBrain() if b == "agent_sdk" else None
+
+
+def notebook(sport: str = "nfl") -> str:
     n = db.read(db.capper_notes)
+    if not n.empty:
+        n = n[n["sport"].fillna("nfl") == sport]
     if n.empty:
         return "(empty - no graded picks yet)"
     return n.sort_values("id").iloc[-1]["notes"]
 
 
-def ask_capper(client, dossier: str, cfg: dict) -> tuple[CapperCard | None, str]:
+def ask_capper(client, dossier: str, cfg: dict, system: str | None = None) -> tuple[CapperCard | None, str]:
     """One game -> a validated card. Returns (card, model_that_served) or (None, reason)."""
     import anthropic
 
     ccfg = cfg.get("capper", {})
+    head, _, nb = (system or system_prompt("nfl")).partition(NOTEBOOK_HEADER)
     system = [
-        {"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": "## Your notebook (lessons from your own graded picks)\n" + notebook()},
+        {"type": "text", "text": head, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": NOTEBOOK_HEADER + nb},
     ]
     tools = [
         {"type": "web_search_20260209", "name": "web_search", "max_uses": int(ccfg.get("web_searches", 5))},
@@ -354,10 +475,12 @@ NOTEBOOK_SCHEMA = {
 }
 
 
-def update_notebook(client, cfg: dict, log=print) -> bool:
-    """Rewrite the notebook once enough new capper picks have been graded since the last version."""
-    p = db.read(db.picks, "WHERE source = 'capper' AND status IN ('win', 'loss', 'push')")
+def update_notebook(brain, cfg: dict, log=print, sport: str = "nfl") -> bool:
+    """Rewrite the sport's notebook once enough new capper picks have been graded since the last version."""
+    p = db.read(db.picks, "WHERE source = 'capper' AND sport = :s AND status IN ('win', 'loss', 'push')", {"s": sport})
     n_prev = db.read(db.capper_notes)
+    if not n_prev.empty:
+        n_prev = n_prev[n_prev["sport"].fillna("nfl") == sport]
     last = 0 if n_prev.empty else int(n_prev.sort_values("id").iloc[-1]["graded_count"] or 0)
     if len(p) - last < int(cfg.get("capper", {}).get("notebook_every", 6)):
         return False
@@ -365,51 +488,46 @@ def update_notebook(client, cfg: dict, log=print) -> bool:
     lines = []
     for r in p.itertuples():
         clv = "" if pd.isna(r.clv_points) else f", CLV {r.clv_points:+g} pts"
-        lines.append(f"- {r.kickoff[:10]} {r.matchup}: {r.selection} {fmt_american(r.price)} {r.units:g}U -> {r.status} "
+        lines.append(f"- {str(r.kickoff)[:10]} {r.matchup}: {r.selection} {fmt_american(r.price)} {r.units:g}U -> {r.status} "
                      f"({r.profit_units:+.2f}U, result {r.result_value}{clv})\n  thesis: {(r.rationale or '')[:600]}")
     w = (p["status"] == "win").sum()
-    prompt = (f"Your graded picks so far ({w}-{(p['status'] == 'loss').sum()}, {p['profit_units'].sum():+.2f}U):\n"
-              + "\n".join(lines) + "\n\nYour current notebook:\n" + notebook() +
+    prompt = (f"Your graded {SPORT_NAME[sport]} picks so far ({w}-{(p['status'] == 'loss').sum()}, "
+              f"{p['profit_units'].sum():+.2f}U):\n" + "\n".join(lines) + "\n\nYour current notebook:\n" + notebook(sport) +
               "\n\nRewrite the notebook. Keep lessons that the results support, drop ones they contradict, add new ones. "
               "Each lesson: one or two sentences, specific (situation -> what happened -> what to do), with the evidence "
               "count, e.g. '(3-1)'. Separate real signal from small-sample noise and from bad luck on good reads "
               "(beat the close but lost). At most 15 lessons.")
     try:
-        resp = client.beta.messages.create(
-            model=cfg["run"]["claude_model"], max_tokens=16000,
-            system="You are the reasoning capper reviewing your own track record honestly.",
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"effort": "high", "format": {"type": "json_schema", "schema": NOTEBOOK_SCHEMA}},
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-        )
-        if resp.stop_reason == "refusal":
-            return False
-        notes = json.loads(next(b.text for b in resp.content if b.type == "text"))["notes"]
+        notes = brain.notes(prompt, cfg)
     except Exception as e:
         log(f"Capper notebook update failed: {e}")
         return False
-    db.insert_df(db.capper_notes, pd.DataFrame([{"created_at": db.now(), "graded_count": len(p), "notes": notes}]))
-    log(f"Capper notebook rewritten from {len(p)} graded picks")
+    if not notes:
+        return False
+    db.insert_df(db.capper_notes, pd.DataFrame([{"created_at": db.now(), "graded_count": len(p), "notes": notes,
+                                                 "sport": sport}]))
+    log(f"Capper {sport.upper()} notebook rewritten from {len(p)} graded picks")
     return True
 
 
 # ---------------------------------------------------------------- run
 
-def _pick_record(card_pick: CapperPick, offer: dict, game: dict, run_id: str, served_by: str, read: str) -> dict:
+def _pick_record(card_pick: CapperPick, offer: dict, game: dict, run_id: str, served_by: str, read: str,
+                 sport: str = "nfl") -> dict:
     gid = str(game["game_id"])
     alt = "-alt" if offer["kind"] == "ladder" else ""
     line_tag = "" if offer["line"] is None else f"{offer['line']:g}"
-    pid = f"nfl|{gid}|{offer['market']}|{offer['side']}|{offer.get('player_id') or ''}|capper{alt}@{line_tag}"
+    pid = f"{sport}|{gid}|{offer['market']}|{offer['side']}|{offer.get('player_id') or ''}|capper{alt}@{line_tag}"
     if offer["kind"] == "game":
         category = {"spread": "side", "total": "total", "ml": "ml"}[offer["market"]]
     else:
         category = "attd" if MARKET_STAT.get(offer["market"]) == "anytime_td" else "prop"
-    rationale = (f"**Capper ({card_pick.edge_type.replace('_', ' ')}, confidence {card_pick.confidence}/5, "
-                 f"{card_pick.vs_model} with the model):** {card_pick.thesis}\n\n"
-                 + "".join(f"- {f}\n" for f in card_pick.factors)
+    vs = "" if sport != "nfl" else f", {card_pick.vs_model} with the model"
+    rationale = (f"**Capper ({card_pick.edge_type.replace('_', ' ')}, confidence {card_pick.confidence}/5{vs}):** "
+                 f"{card_pick.thesis}\n\n" + "".join(f"- {f}\n" for f in card_pick.factors)
                  + f"- **Risk:** {card_pick.risk}\n\n_Game read: {read}_")
     return {
-        "pick_id": pid, "run_id": run_id, "sport": "nfl", "category": category, "event_id": game.get("event_id"),
+        "pick_id": pid, "run_id": run_id, "sport": sport, "category": category, "event_id": game.get("event_id"),
         "game_id": gid, "kickoff": str(game.get("kickoff")), "matchup": f"{game['away']} @ {game['home']}",
         "market": offer["market"], "selection": offer["label"], "player": offer.get("player"),
         "player_id": offer.get("player_id"), "line": offer["line"], "price": float(offer["price"]),
@@ -417,30 +535,90 @@ def _pick_record(card_pick: CapperPick, offer: dict, game: dict, run_id: str, se
     }
 
 
-def run(run_id: str, cfg: dict, log=print, now=None) -> int:
-    """Analyse each NFL game kicking off within the window that the capper hasn't read recently."""
-    ccfg = cfg.get("capper", {})
-    if not ccfg.get("enabled", False):
+def _setting(cfg: dict, sport: str, key: str, default):
+    """capper.<key>, overridden per sport by capper.<sport>.<key>."""
+    c = cfg.get("capper", {})
+    return c.get(sport, {}).get(key, c.get(key, default))
+
+
+def _window(cfg: dict, sport: str, now: pd.Timestamp) -> pd.DataFrame:
+    games, _ = db.latest_board(sport, "games")
+    if games.empty:
+        return games
+    games["kick"] = pd.to_datetime(games["kickoff"], utc=True, errors="coerce", format="ISO8601")
+    hours = float(_setting(cfg, sport, "window_hours", 24))
+    w = games[(games["kick"] > now) & (games["kick"] <= now + timedelta(hours=hours)) & games["event_id"].notna()]
+    reviews = db.read(db.capper_reviews)
+    if not reviews.empty:
+        made = pd.to_datetime(reviews["created_at"], utc=True, format="ISO8601")
+        recent = reviews[(reviews["sport"] == sport)
+                         & (made > now - timedelta(hours=float(_setting(cfg, sport, "reread_hours", 30))))]
+        w = w[~w["game_id"].astype(str).isin(set(recent["game_id"].astype(str)))]
+    return w.sort_values("kick")
+
+
+def _day_used(sport: str) -> dict[str, float]:
+    p = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
+    used: dict[str, float] = {}
+    if p.empty:
+        return used
+    for r in p[db.is_capper(p)].itertuples():
+        d = pd.to_datetime(r.kickoff, utc=True, format="ISO8601").tz_convert("America/New_York").strftime("%Y-%m-%d")
+        used[d] = used.get(d, 0.0) + float(r.units)
+    return used
+
+
+def _process(brain, sport: str, g: dict, offers: list[dict], dossier: str, cfg: dict, run_id: str,
+             now: pd.Timestamp, day_used: dict, log) -> int:
+    card, served = brain.card(system_prompt(sport), dossier, cfg)
+    if card is None:
+        log(f"Capper {g['away']} @ {g['home']}: no card ({served})")
         return 0
-    if not secret("ANTHROPIC_API_KEY"):
-        log("Capper skipped: ANTHROPIC_API_KEY not set")
+    by_id = {o["id"]: o for o in offers}
+    kept, n = [], 0
+    day = g["kick"].tz_convert("America/New_York").strftime("%Y-%m-%d")
+    cap_day = float(_setting(cfg, sport, "units_per_day", 4.0))
+    for cp in card.picks[: int(_setting(cfg, sport, "max_picks_per_game", 3))]:
+        o = by_id.get(cp.offer_id)
+        if o is None or o.get("price") is None or pd.isna(o["price"]):
+            log(f"Capper: ignored unknown offer {cp.offer_id}")
+            continue
+        cp.units = round(min(max(cp.units, 0.25), float(_setting(cfg, sport, "max_units", 1.0))) * 4) / 4
+        if day_used.get(day, 0.0) + cp.units > cap_day + 1e-9:
+            log(f"Capper: daily cap reached, skipped {o['label']}")
+            continue
+        rec = _pick_record(cp, o, g, run_id, served, card.game_read, sport)
+        if db.upsert_pick(rec) == "inserted":
+            day_used[day] = day_used.get(day, 0.0) + cp.units
+            kept.append(f"{o['label']} {fmt_american(o['price'])} {cp.units:g}U")
+            n += 1
+    db.insert_df(db.capper_reviews, pd.DataFrame([{
+        "created_at": now.isoformat(), "sport": sport, "game_id": str(g["game_id"]), "matchup": f"{g['away']} @ {g['home']}",
+        "kickoff": str(g.get("kickoff")), "model": f"{served} via {brain.name}", "read": card.game_read,
+        "passes": card.passes, "payload": card.model_dump_json(),
+    }]))
+    log(f"Capper {g['away']} @ {g['home']}: " + ("; ".join(kept) if kept else "pass"))
+    return n
+
+
+def run(run_id: str, cfg: dict, log=print, now=None, sport: str = "nfl") -> int:
+    """Read each game kicking off within the sport's window that the capper hasn't read yet."""
+    if not cfg.get("capper", {}).get("enabled", False) or not _setting(cfg, sport, "enabled", True):
+        return 0
+    brain = make_brain(cfg)
+    if brain is None:
+        log("Capper skipped: set ANTHROPIC_API_KEY (API) or CLAUDE_CODE_OAUTH_TOKEN (subscription via Agent SDK)")
         return 0
     now = pd.Timestamp(now or pd.Timestamp.now(tz="UTC"))
     now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
-    client = _client()
-    update_notebook(client, cfg, log)
-    games, _ = db.latest_board("nfl", "games")
-    if games.empty:
-        return 0
-    games["kick"] = pd.to_datetime(games["kickoff"], utc=True, errors="coerce", format="ISO8601")
-    window = games[(games["kick"] > now) & (games["kick"] <= now + timedelta(hours=float(ccfg.get("window_hours", 36))))]
+    update_notebook(brain, cfg, log, sport)
+    window = _window(cfg, sport, now)
     if window.empty:
         return 0
-    reviews = db.read(db.capper_reviews)
-    recent = set()
-    if not reviews.empty:
-        made = pd.to_datetime(reviews["created_at"], utc=True, format="ISO8601")
-        recent = set(reviews.loc[made > now - timedelta(hours=float(ccfg.get("reread_hours", 20))), "game_id"].astype(str))
+    return (_run_nfl if sport == "nfl" else _run_nba)(brain, window, cfg, run_id, now, log)
+
+
+def _run_nfl(brain, window, cfg, run_id, now, log) -> int:
     props, _ = db.latest_board("nfl", "props")
     ladder, _ = db.latest_board("nfl", "ladder")
     pproj, _ = db.latest_board("nfl", "projections_players")
@@ -453,16 +631,8 @@ def run(run_id: str, cfg: dict, log=print, now=None) -> int:
     except Exception:
         def_out = {}
     open_picks = db.read(db.picks, "WHERE sport = 'nfl' AND status = 'pending'")
-    n = 0
-    day_used: dict[str, float] = {}
-    if not open_picks.empty:
-        cap_open = open_picks[db.is_capper(open_picks)]
-        for r in cap_open.itertuples():
-            d = pd.to_datetime(r.kickoff, utc=True, format="ISO8601").tz_convert("America/New_York").strftime("%Y-%m-%d")
-            day_used[d] = day_used.get(d, 0.0) + float(r.units)
-    for g in window.sort_values("kick").to_dict("records"):
-        if str(g["game_id"]) in recent or not g.get("event_id"):
-            continue
+    day_used, n = _day_used("nfl"), 0
+    for g in window.to_dict("records"):
         offers = build_offers(g, props, ladder, cfg)
         if not offers:
             continue
@@ -470,31 +640,65 @@ def run(run_id: str, cfg: dict, log=print, now=None) -> int:
             if not open_picks.empty else pd.DataFrame()
         dossier = build_dossier(g, offers, props[props["team"].isin([g["home"], g["away"]])] if not props.empty else props,
                                 ladder, pproj, ps, inj, snaps, def_out, model_picks, season, week)
-        card, served = ask_capper(client, dossier, cfg)
-        if card is None:
-            log(f"Capper {g['away']} @ {g['home']}: no card ({served})")
+        n += _process(brain, "nfl", g, offers, dossier, cfg, run_id, now, day_used, log)
+    return n
+
+
+# ---------------------------------------------------------------- NBA
+
+ALT_PRICE_RANGE = (-200, 1200)
+
+
+def nba_offers(g: dict, props: pd.DataFrame) -> list[dict]:
+    from pocket_capper.data import nba
+
+    offers = build_offers({**g, "event_id": None}, pd.DataFrame(), pd.DataFrame(), {})  # game lines only
+    if props.empty:
+        return offers
+    p = props[(props["event_id"] == g["event_id"]) & (props["book"] == "draftkings") & props["price"].notna()]
+    p = p.sort_values(["player", "market", "point"])
+    for r in p.itertuples():
+        alt = r.market.endswith("_alternate")
+        main = nba.main_market(r.market)
+        if main not in nba.STAT_LABEL or r.side not in ("over", "under") or (alt and r.side != "over"):
             continue
-        by_id = {o["id"]: o for o in offers}
-        kept = []
-        day = g["kick"].tz_convert("America/New_York").strftime("%Y-%m-%d")
-        for cp in card.picks[: int(ccfg.get("max_picks_per_game", 3))]:
-            o = by_id.get(cp.offer_id)
-            if o is None or o.get("price") is None or pd.isna(o["price"]):
-                log(f"Capper: ignored unknown offer {cp.offer_id}")
-                continue
-            cp.units = round(min(max(cp.units, 0.25), float(ccfg.get("max_units", 1.0))) * 4) / 4
-            if day_used.get(day, 0.0) + cp.units > float(ccfg.get("units_per_day", 4.0)) + 1e-9:
-                log(f"Capper: daily cap reached, skipped {o['label']}")
-                continue
-            rec = _pick_record(cp, o, g, run_id, served, card.game_read)
-            if db.upsert_pick(rec) == "inserted":
-                day_used[day] = day_used.get(day, 0.0) + cp.units
-                kept.append(f"{o['label']} {fmt_american(o['price'])} {cp.units:g}U")
-                n += 1
-        db.insert_df(db.capper_reviews, pd.DataFrame([{
-            "created_at": now.isoformat(), "sport": "nfl", "game_id": str(g["game_id"]), "matchup": f"{g['away']} @ {g['home']}",
-            "kickoff": str(g.get("kickoff")), "model": served, "read": card.game_read, "passes": card.passes,
-            "payload": card.model_dump_json(),
-        }]))
-        log(f"Capper {g['away']} @ {g['home']}: " + ("; ".join(kept) if kept else "pass"))
+        if alt and not (ALT_PRICE_RANGE[0] <= r.price <= ALT_PRICE_RANGE[1]):
+            continue  # near-locks and lottery tickets are noise in the dossier
+        rung = f"{int(r.point + 0.5)}+ {nba.STAT_LABEL[main]} (alt)" if alt else f"{r.side.title()} {r.point:g} {nba.STAT_LABEL[main]}"
+        offers.append({"id": f"o{len(offers) + 1}", "kind": "ladder" if alt else "prop", "market": main, "side": r.side,
+                       "line": float(r.point), "price": float(r.price), "player": r.player,
+                       "player_id": nba.player_id(r.player), "label": f"{r.player} {rung}"})
+    return offers
+
+
+def nba_dossier(g: dict, offers: list[dict], injuries: dict) -> str:
+    L = [f"# {g['away_name']} ({g['away']}) @ {g['home_name']} ({g['home']}) - tip {g['kickoff']}", "",
+         "## Market",
+         f"DK: {g['home']} {g.get('dk_spread_home')} | total {g.get('dk_total')} | ML {g['home']} "
+         f"{fmt_american(g['dk_ml_home']) if pd.notna(g.get('dk_ml_home')) else 'n/a'} / {g['away']} "
+         f"{fmt_american(g['dk_ml_away']) if pd.notna(g.get('dk_ml_away')) else 'n/a'}",
+         f"Consensus across {g.get('books')} books: {g['home']} {g.get('consensus_spread_home')}, total {g.get('consensus_total')}"]
+    L += _line_history(g["event_id"])
+    for team in (g["away"], g["home"]):
+        L += ["", f"## {team} injury report (ESPN; confirm the latest yourself)"]
+        L += [f"- {x}" for x in injuries.get(team, [])] or ["- nothing listed"]
+    L += ["", "## Offers you may pick from (DK prices)"]
+    L += [f"{o['id']}: {o['label']} @ {fmt_american(o['price'])}" for o in offers]
+    return "\n".join(L)
+
+
+def _run_nba(brain, window, cfg, run_id, now, log) -> int:
+    from pocket_capper.data import nba
+
+    props, _ = db.latest_board("nba", "props")
+    try:
+        inj = nba.injuries()
+    except Exception as e:
+        log(f"NBA injuries unavailable: {e}")
+        inj = {}
+    day_used, n = _day_used("nba"), 0
+    for g in window.to_dict("records"):
+        offers = nba_offers(g, props)
+        if offers:
+            n += _process(brain, "nba", g, offers, nba_dossier(g, offers, inj), cfg, run_id, now, day_used, log)
     return n

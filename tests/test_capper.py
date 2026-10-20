@@ -71,7 +71,7 @@ def _seed(db):
 
 
 def _patch(monkeypatch, client):
-    monkeypatch.setattr(capper, "secret", lambda n, d=None: "test-key")
+    monkeypatch.setattr(capper, "secret", lambda n, d=None: "test-key" if n == "ANTHROPIC_API_KEY" else None)
     monkeypatch.setattr(capper, "_client", lambda: client)
     monkeypatch.setattr(capper.nflverse, "player_stats", lambda seasons: pd.DataFrame(columns=[
         "season", "week", "team", "position", "player_display_name", "targets", "carries", "attempts"]))
@@ -150,7 +150,7 @@ def test_notebook_rewrites_after_enough_graded_picks(tmp_db, monkeypatch):
                             "signals": [], "source": "capper", "rationale": "thesis"})
         tmp_db.update_pick(f"nfl|g{i}|player_receptions|under|p|capper@3.5", status="win" if i % 2 else "loss",
                            profit_units=0.45 if i % 2 else -0.5, result_value=2.0)
-    client = FakeClient({}, notes="1. Unders on capped-role WRs held up (3-3).")
-    assert capper.update_notebook(client, config(), print)
-    assert "capped-role" in capper.notebook()
-    assert not capper.update_notebook(client, config(), print)  # nothing new graded since
+    brain = capper.ApiBrain(FakeClient({}, notes="1. Unders on capped-role WRs held up (3-3)."))
+    assert capper.update_notebook(brain, config(), print, "nfl")
+    assert "capped-role" in capper.notebook("nfl") and "capped-role" not in capper.notebook("nba")
+    assert not capper.update_notebook(brain, config(), print, "nfl")  # nothing new graded since

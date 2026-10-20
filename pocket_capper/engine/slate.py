@@ -41,19 +41,19 @@ def run(sports=("nfl", "cfb"), include_props: bool = True, progress=None, now: d
     summary = {"run_id": run_id, "picks": 0, "errors": []}
     for sport in sports:
         try:
-            n = (run_nfl if sport == "nfl" else run_cfb)(run_id, cfg, log, now, include_props)
+            n = {"nfl": run_nfl, "cfb": run_cfb, "nba": run_nba}[sport](run_id, cfg, log, now, include_props)
             summary["picks"] += n
         except Exception as e:  # one sport failing should not kill the other
             log(f"{sport.upper()} failed: {e}")
             summary["errors"].append(f"{sport}: {e}")
             traceback.print_exc()
-    if "nfl" in sports:
+    for sport in [s for s in sports if s in ("nfl", "nba")]:
         try:  # the reasoning capper reads the boards this run just wrote
             from pocket_capper.engine import capper
 
-            summary["capper_picks"] = capper.run(run_id, cfg, log, now)
+            summary["capper_picks"] = summary.get("capper_picks", 0) + capper.run(run_id, cfg, log, now, sport=sport)
         except Exception as e:
-            log(f"Capper failed: {e}")
+            log(f"Capper {sport.upper()} failed: {e}")
             traceback.print_exc()
     with db.engine().begin() as conn:
         conn.execute(
@@ -470,6 +470,66 @@ def _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj) -> None:
     if not lad.empty:
         log(f"Ladders: {lad.groupby(['player', 'stat']).ngroups} player markets, {int(lad['value'].sum())} value rungs "
             f"({len(alt)} DK alt prices)")
+
+
+# ------------------------------------------------------------------ NBA
+
+def run_nba(run_id, cfg, log, now, include_props) -> int:
+    """NBA has no quant model yet: store the market (game lines, props, alt lines) for the capper and for CLV."""
+    from pocket_capper.data import nba
+    from pocket_capper.market.market import current_board
+
+    odds = _fetch_odds("nba", cfg, log, now)
+    if odds.empty:
+        return 0
+    horizon = pd.Timestamp(now) + timedelta(hours=float(cfg["sports"]["nba"].get("lookahead_hours", 36)))
+    odds = odds[pd.to_datetime(odds["commence_time"], utc=True, format="ISO8601") <= horizon]
+    board = current_board(odds)
+    primary = cfg["books"]["primary"]
+    rows = []
+    for ev_id, g in odds.groupby("event_id"):
+        r0 = g.iloc[0]
+        home, away = nba.abbr(r0["home_name"]), nba.abbr(r0["away_name"])
+        if not home or not away:
+            log(f"NBA: unknown team in {r0['away_name']} @ {r0['home_name']}")
+            continue
+        sp, tot, ml = (mk_line(board, ev_id, primary, m) for m in ("spread", "total", "ml"))
+        b = board[board["event_id"] == ev_id]
+        cons_sp = b[(b["market"] == "spread") & (b["side"] == "home")]["point"].median()
+        cons_tot = b[(b["market"] == "total") & (b["side"] == "over")]["point"].median()
+        rows.append({
+            "game_id": nba.game_id(r0["commence_time"], away, home), "event_id": ev_id, "kickoff": r0["commence_time"],
+            "away": away, "home": home, "away_name": r0["away_name"], "home_name": r0["home_name"],
+            "dk_spread_home": sp.get("home", (None, None))[0], "dk_spread_home_price": sp.get("home", (None, None))[1],
+            "dk_spread_away_price": sp.get("away", (None, None))[1], "dk_total": tot.get("over", (None, None))[0],
+            "dk_over_price": tot.get("over", (None, None))[1], "dk_under_price": tot.get("under", (None, None))[1],
+            "dk_ml_home": ml.get("home", (None, None))[1], "dk_ml_away": ml.get("away", (None, None))[1],
+            "consensus_spread_home": cons_sp, "consensus_total": cons_tot, "books": int(b["book"].nunique()),
+        })
+    games = pd.DataFrame(rows)
+    db.save_board(run_id, "nba", "games", games)
+    log(f"NBA: {len(games)} games in the next {cfg['sports']['nba'].get('lookahead_hours', 36)}h")
+    if not include_props or games.empty:
+        return 0
+    frames = []
+    for ev_id in games["event_id"]:
+        try:
+            frames.append(odds_api.event_props(nba.ODDS_KEY, ev_id, nba.PROP_MARKETS + nba.ALT_MARKETS, [primary]))
+        except Exception as e:
+            log(f"NBA props fetch failed for {ev_id}: {e}")
+    props = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not props.empty:
+        props["sport"] = "nba"
+        db.insert_snapshots(props[~props["market"].str.endswith("_alternate")])  # main lines feed CLV
+        db.save_board(run_id, "nba", "props", props)
+    log(f"NBA props: {len(props)} DK prices (API requests remaining: {odds_api.LAST_USAGE.get('remaining')})")
+    return 0
+
+
+def mk_line(board, event_id, book, market) -> dict:
+    from pocket_capper.market.market import book_line
+
+    return book_line(board, event_id, book, market)
 
 
 # ------------------------------------------------------------------ CFB

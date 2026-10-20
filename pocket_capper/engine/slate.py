@@ -434,8 +434,34 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
         n += 1
     db.save_board(run_id, "nfl", "props", ev[ev["stat"] != "anytime_td"])
     db.save_board(run_id, "nfl", "attd", ev[ev["stat"] == "anytime_td"])
+    if cfg["props"].get("ladder", {}).get("enabled", True):
+        _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj)
     log(f"Props: {int(ev['qualifies'].sum())} plays ({int((ev['qualifies'] & (ev['stat'] == 'anytime_td')).sum())} TD Zone)")
     return n
+
+
+def _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj) -> None:
+    """Alt-line ladders (informational, never auto-bet): fair odds per rung vs DK's alt prices."""
+    from pocket_capper.market import ladder
+
+    frames = []
+    for ev_id in odds["event_id"].unique():
+        try:
+            frames.append(odds_api.event_props(cfg["sports"]["nfl"]["odds_key"], ev_id, list(ladder.ALT_MARKET_STAT),
+                                               [cfg["books"]["primary"]]))
+        except Exception as e:
+            log(f"alt lines fetch failed for {ev_id}: {e}")
+    alt = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    try:
+        def_out = nfl_model.defensive_absences(season, week)
+    except Exception as e:
+        log(f"defensive absences unavailable: {e}")
+        def_out = {}
+    lad = ladder.build(ev[ev["stat"] != "anytime_td"], alt, pproj, def_out, cfg)
+    db.save_board(run_id, "nfl", "ladder", lad)
+    if not lad.empty:
+        log(f"Ladders: {lad.groupby(['player', 'stat']).ngroups} player markets, {int(lad['value'].sum())} value rungs "
+            f"({len(alt)} DK alt prices)")
 
 
 # ------------------------------------------------------------------ CFB

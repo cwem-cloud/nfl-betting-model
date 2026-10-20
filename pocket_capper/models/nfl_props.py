@@ -26,6 +26,10 @@ TDS_PER_POINT = 0.108
 # Count stats are overdispersed vs Poisson once projection error is included (2025 walk-forward):
 # var = m + a*m^2 with a = 0.15 receptions, 0.19 rush attempts, 0.03 pass TDs.
 NB_DISPERSION = {"receptions": 0.15, "rush_att": 0.19, "pass_tds": 0.03}
+# Share of an OUT player's targets/carries that goes to his own position group (rest spreads to everyone).
+# 2025 walk-forward on the 490 player-weeks with a teammate ruled out: 0.5 beat an even split slightly
+# (carries MAE 1.68 -> 1.63, rec yds 22.8 -> 22.6); 0.7-0.9 overshot. Inheritors still run a bit high.
+SAME_POS_SHARE = 0.5
 
 MARKET_STAT = {
     "player_pass_yds": "pass_yds", "player_pass_tds": "pass_tds", "player_pass_attempts": "pass_att",
@@ -119,10 +123,37 @@ def project_players(
             tshare = (grp["targets"].fillna(0).values * wts).sum() / max((tgw["targets"].values * wts).sum(), 1)
             cshare = (grp["carries"].fillna(0).values * wts).sum() / max((tgw["carries"].values * wts).sum(), 1)
             shares[pid] = (tshare, cshare)
-        active_t = sum(v[0] for k, v in shares.items() if k in ids)
-        active_c = sum(v[1] for k, v in shares.items() if k in ids)
+        # Work left behind by OUT teammates goes mostly to the same position group (a lead RB's carries go
+        # to the other backs, not spread across the whole offense), the rest across everyone active.
+        pos_of = players.sort_values("week").groupby("player_id")["position"].last().to_dict()
+        name_of = players.sort_values("week").groupby("player_id")["player_display_name"].last().to_dict()
+        recent_ids = set(recent["player_id"])
+        gone = [o for o in recent_ids & out_players if o in shares]
+        inherit = {pid: [0.0, 0.0] for pid in ids}
+        notes = {pid: [] for pid in ids}
+        for o in gone:
+            for j in (0, 1):
+                amt = shares[o][j]
+                if amt <= 0:
+                    continue
+                same = [p for p in ids if pos_of.get(p) == pos_of.get(o) and shares[p][j] > 0]
+                tot_same = sum(shares[p][j] for p in same)
+                tot_all = sum(shares[p][j] for p in ids)
+                for p in ids:
+                    w = 0.0
+                    if tot_same > 0 and p in same:
+                        w += SAME_POS_SHARE * shares[p][j] / tot_same
+                    if tot_all > 0:
+                        w += (1 - SAME_POS_SHARE if tot_same > 0 else 1.0) * shares[p][j] / tot_all
+                    inherit[p][j] += amt * w
+                    if amt * w >= 0.03:
+                        what = "targets" if j == 0 else "carries"
+                        notes[p].append(f"+{amt * w:.0%} {what} with {pos_of.get(o, '')} {name_of.get(o, o)} out")
+        active_t = sum(shares[k][0] + inherit[k][0] for k in ids if k in shares)
+        active_c = sum(shares[k][1] + inherit[k][1] for k in ids if k in shares)
         scale_t = min(1.25, 1 / active_t) if active_t > 0 else 1
         scale_c = min(1.25, 1 / active_c) if active_c > 0 else 1
+        team_last_week = int(tg["week"].max())
 
         team_td_tot = tg["rush_tds"].sum() + tg["rec_tds"].sum()
         for pid in ids:
@@ -132,12 +163,15 @@ def project_players(
             if pos not in ("QB", "RB", "WR", "TE"):
                 continue
             tshare, cshare = shares[pid]
-            tshare *= scale_t
-            cshare *= scale_c
+            tshare = (tshare + inherit[pid][0]) * scale_t
+            cshare = (cshare + inherit[pid][1]) * scale_c
+            situation = list(notes[pid])
+            if int(grp["week"].max()) < team_last_week:
+                situation.append("returning: missed the last game (recent box scores understate his role)")
             tot_tgt, tot_car = grp["targets"].fillna(0).sum(), grp["carries"].fillna(0).sum()
             rec = {
                 "player_id": pid, "player": last["player_display_name"], "position": pos, "team": tp.team,
-                "opp": tp.opp, "games": len(grp),
+                "opp": tp.opp, "games": len(grp), "situation": "; ".join(situation),
             }
             dpass = opp_pass.get(tp.opp, 1.0)
             drush = opp_rush.get(tp.opp, 1.0)

@@ -111,6 +111,39 @@ def key_skill_players(player_stats: pd.DataFrame, season: int, week: int) -> dic
     return out
 
 
+PASS_D = {"CB", "DB", "S", "FS", "SS"}
+RUN_D = {"DT", "NT", "DE", "DL", "LB", "ILB", "MLB", "OLB", "EDGE"}
+
+
+def defensive_absences(season: int, week: int, min_snap_pct: float = 0.6) -> dict[str, list[dict]]:
+    """Regular defensive starters (>= min_snap_pct of snaps in the games they played, last 4 team games)
+    ruled out this week, per team. Context for props: a backup corner or a missing run-stopper."""
+    from pocket_capper.data.teams import norm_player
+
+    inj, snaps = nflverse.injuries(season), nflverse.snap_counts(season)
+    if inj.empty or snaps.empty:
+        return {}
+    wk = inj[(inj["week"] == week) & inj["report_status"].isin(OUT_STATUSES)]
+    s = snaps[(snaps["week"] < week) & (snaps["defense_pct"] > 0)]
+    res: dict[str, list[dict]] = {}
+    for team, grp in s.groupby("team"):
+        recent = grp[grp["week"] >= sorted(grp["week"].unique())[-4:][0]]
+        per = recent.groupby("player").agg(pct=("defense_pct", "mean"), games=("week", "nunique"),
+                                           pos=("position", "last"), last=("week", "max"))
+        starters = per[(per["pct"] >= min_snap_pct) & (per["games"] >= 2)]
+        if starters.empty:
+            continue
+        out_here = wk[wk["team"] == team]
+        keys = {norm_player(n): n for n in out_here["full_name"]}
+        team_last = int(grp["week"].max())
+        for name, r in starters.iterrows():
+            if norm_player(name) in keys:
+                group = "pass" if r["pos"] in PASS_D else "run" if r["pos"] in RUN_D else "other"
+                res.setdefault(team, []).append({"name": name, "pos": r["pos"], "snap_pct": float(r["pct"]),
+                                                 "group": group, "already_missed": int(r["last"]) < team_last})
+    return res
+
+
 def out_player_ids(season: int, week: int) -> set[str]:
     inj = nflverse.injuries(season)
     if inj.empty:

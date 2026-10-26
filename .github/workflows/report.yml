@@ -35,6 +35,29 @@ jobs:
       - run: python scripts/rescreen_pending.py
       - name: Run the slate (only when the commit message says [slate])
         if: contains(github.event.head_commit.message, '[slate]') || github.event_name == 'workflow_dispatch'
-        run: python scripts/run_slate.py
+        run: python scripts/run_slate.py --sports nfl
       - run: python scripts/report.py
+      - name: MNF ladders
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          import pandas as pd
+          from pocket_capper import db
+          from pocket_capper.market.odds_math import fmt_american
+          pd.set_option("display.width", 250, "display.max_rows", 400, "display.max_colwidth", 120)
+          lad, ts = db.latest_board("nfl", "ladder")
+          print("ladder board", ts, "rows", len(lad), "value rungs (all games)", int(lad["value"].sum()))
+          d = lad[lad["matchup"] == "DAL @ PHI"].copy()
+          d["fair"] = d["fair_odds"].map(fmt_american); d["dk"] = d["dk_price"].map(lambda x: fmt_american(x) if pd.notna(x) else "-")
+          print("DAL@PHI value rungs:", int(d["value"].sum()))
+          best = d[d["dk_price"].notna()].sort_values("ev", ascending=False)
+          print(best[["player", "team", "stat", "rung", "main_line", "market_mean", "projection", "model_prob", "fair", "dk", "ev", "value", "context"]].head(40).to_string(index=False))
+          sit = d[d["context"].fillna("") != ""].drop_duplicates("player")[["player", "team", "context"]]
+          print(sit.to_string(index=False))
+          g, _ = db.latest_board("nfl", "games")
+          print(g[(g["home"] == "PHI")].T.to_string())
+          pr, _ = db.latest_board("nfl", "props")
+          pp = pr[pr["team"].isin(["DAL", "PHI"])].sort_values("ev", ascending=False)
+          print(pp[["player", "team", "stat", "side", "line", "price", "projection", "ev", "qualifies"]].head(25).to_string(index=False))
+          PY
       - run: python scripts/analyze.py

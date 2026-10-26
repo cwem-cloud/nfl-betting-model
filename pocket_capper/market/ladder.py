@@ -1,8 +1,12 @@
 """Alt-line ladders: fair odds for every rung, DK's alt prices, and the situation behind each player.
 
 Each player-stat starts from the same market-anchored number as the main prop (market-implied mean
-moved toward our projection by the stat's model weight), then every higher rung is priced off that
-distribution. A rung is flagged as value only when DK pays more than fair by `min_ev`.
+moved toward our projection by the stat's model weight). Where DK posts an alt price, the rung is priced
+as DK's own (de-vigged) probability scaled by how much more or less likely our number makes it than the
+market's number does, under the same distribution. Our distribution's shape cancels out of that ratio,
+so a rung only shows value when our projection genuinely differs from the market - pricing rungs off our
+shape alone flagged ~530 "value" rungs a week, nearly all of them shape artefacts on long-shot tails.
+A rung is flagged as value only when DK pays more than fair by `min_ev`.
 """
 from __future__ import annotations
 
@@ -48,6 +52,7 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
         return pd.DataFrame()
     lcfg = cfg["props"].get("ladder", {})
     min_ev, max_ev, min_p = lcfg.get("min_ev", 0.05), lcfg.get("max_ev", 0.35), lcfg.get("min_prob", 0.04)
+    hold = lcfg.get("alt_hold", 0.07)  # one-sided alt prices: strip roughly this much margin
     primary = cfg["books"]["primary"]
     k_by_stat = cfg["props"]["model_weight"]
     situation = {}
@@ -73,10 +78,15 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
         ctx = "; ".join(filter(None, [situation.get(r.player_id, ""),
                                        defense_note(r.stat, r.position, def_out.get(r.opp, []))]))
         for pt in points:
-            p = nfl_props.prob_over(r.stat, m, pt)
-            if not np.isfinite(p) or p < min_p:
+            p_ours = nfl_props.prob_over(r.stat, m, pt)
+            if not np.isfinite(p_ours) or p_ours < min_p:
                 continue
             price = offers.get(pt)
+            p = p_ours
+            if price is not None:
+                p_shape = nfl_props.prob_over(r.stat, m_mkt, pt)  # same shape, market's number
+                if np.isfinite(p_shape) and p_shape > 0:
+                    p = float(np.clip(om.american_to_prob(price) / (1 + hold) * p_ours / p_shape, 0.001, 0.99))
             ev = om.expected_value(p, price) if price is not None else np.nan
             rows.append({
                 "event_id": r.event_id, "matchup": getattr(r, "matchup", None), "kickoff": getattr(r, "kickoff", None),

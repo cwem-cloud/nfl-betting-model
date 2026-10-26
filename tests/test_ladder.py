@@ -59,39 +59,51 @@ def _eval_row(**kw):
     return r
 
 
+def _alt(points_prices, player="Wide One", market="player_receptions_alternate"):
+    return pd.DataFrame([{"event_id": "e1", "book": "draftkings", "market": market, "player": player,
+                          "side": "over", "point": pt, "price": pr} for pt, pr in points_prices])
+
+
+def test_no_model_opinion_means_no_ladder_value():
+    """Projection equal to the market's number: the distribution's shape must not create 'value'."""
+    from pocket_capper.market import evaluate
+
+    cfg = config()
+    m_mkt = evaluate._implied_mean("receptions", 4.5, 0.5)
+    ev = pd.DataFrame([_eval_row(projection=m_mkt)])
+    lad = ladder.build(ev, _alt([(5.5, 250), (6.5, 500), (7.5, 900)]), pd.DataFrame(), {}, cfg)
+    priced = lad[lad["dk_price"].notna()]
+    assert len(priced) == 3 and not priced["value"].any()
+    # with no opinion, fair = DK's de-vigged price, so EV is about minus the stripped margin
+    assert (priced["ev"].abs() < 0.08).all() and (priced["ev"] < 0).all()
+
+
 def test_ladder_prices_rungs_and_flags_value():
     cfg = config()
-    ev = pd.DataFrame([_eval_row()])
-    alt = pd.DataFrame([
-        {"event_id": "e1", "book": "draftkings", "market": "player_receptions_alternate", "player": "Wide One",
-         "side": "over", "point": 5.5, "price": 600},   # way above fair: value
-        {"event_id": "e1", "book": "draftkings", "market": "player_receptions_alternate", "player": "Wide One",
-         "side": "over", "point": 6.5, "price": 150},   # below fair: not value
-    ])
-    lad = ladder.build(ev, alt, pd.DataFrame(), {"NO": [{"name": "Corner Guy", "pos": "CB", "snap_pct": 0.9,
-                                                          "group": "pass", "already_missed": False}]}, cfg)
+    ev = pd.DataFrame([_eval_row(projection=6.5)])  # we're well above the market on this player
+    lad = ladder.build(ev, _alt([(5.5, 250), (6.5, 150)]), pd.DataFrame(),
+                       {"NO": [{"name": "Corner Guy", "pos": "CB", "snap_pct": 0.9, "group": "pass",
+                                "already_missed": False}]}, cfg)
     assert set(lad["rung"]) >= {6, 7, 8}
     six, seven = lad[lad["rung"] == 6].iloc[0], lad[lad["rung"] == 7].iloc[0]
-    # rungs get less likely as they climb, and fair odds match the probability
-    assert six["model_prob"] > seven["model_prob"]
-    assert six["model_prob"] < 0.5 and abs(six["fair_odds"] - (100 / six["model_prob"] - 100)) < 1
-    assert six["ev"] > 0.35 and not six["value"]  # +600 is too good to be true: over the sanity cap, not flagged
-    assert seven["ev"] < 0 and not seven["value"]
+    assert six["ev"] > 0 and seven["ev"] > 0  # higher projection lifts every rung above DK's own price
+    assert abs(six["fair_odds"] - (100 / six["model_prob"] - 100)) < 1
     assert "CB Corner Guy" in six["context"]
-    # rungs without a DK alt price are still priced (fair only), never flagged
     no_price = lad[lad["dk_price"].isna()]
-    assert len(no_price) and not no_price["value"].any()
+    assert len(no_price) and not no_price["value"].any()  # unpriced rungs: fair only, never flagged
 
 
-def test_ladder_value_flag():
+def test_lower_projection_kills_overs_value():
     cfg = config()
-    ev = pd.DataFrame([_eval_row(projection=4.6)])
-    lad0 = ladder.build(ev, pd.DataFrame(), pd.DataFrame(), {}, cfg)
-    p = float(lad0[lad0["rung"] == 6]["model_prob"].iloc[0])
-    fair_dec = 1 / p
-    good = round((fair_dec * 1.10 - 1) * 100)  # 10% over fair
-    alt = pd.DataFrame([{"event_id": "e1", "book": "draftkings", "market": "player_receptions_alternate",
-                         "player": "Wide One", "side": "over", "point": 5.5, "price": good}])
-    lad = ladder.build(ev, alt, pd.DataFrame(), {}, cfg)
-    r = lad[lad["rung"] == 6].iloc[0]
-    assert r["value"] and 0.08 < r["ev"] < 0.12
+    ev = pd.DataFrame([_eval_row(projection=3.0, side="under", market_prob=0.5)])
+    lad = ladder.build(ev, _alt([(5.5, 250), (6.5, 500)]), pd.DataFrame(), {}, cfg)
+    assert not lad["value"].any() and (lad[lad["dk_price"].notna()]["ev"] < -0.05).all()
+
+
+def test_far_off_projection_is_never_flagged():
+    """Pierce-style case: the model projects a fill-in's role for a backup when the starter returns."""
+    cfg = config()
+    ev = pd.DataFrame([_eval_row(stat="rush_yds", line=15.5, projection=39.6, position="RB")])
+    lad = ladder.build(ev, _alt([(19.5, 133), (24.5, 205)], market="player_rush_yds_alternate"), pd.DataFrame(), {}, cfg)
+    assert (lad[lad["dk_price"].notna()]["ev"] > 0.1).all()  # looks like a huge edge...
+    assert not lad["value"].any() and lad["context"].str.contains("missing news").all()  # ...but is not flagged

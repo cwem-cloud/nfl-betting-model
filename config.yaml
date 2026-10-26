@@ -135,6 +135,7 @@ props:
     min_ev: 0.05              # highlight a rung only when DK pays at least 5% over fair
     max_ev: 0.35              # bigger "edges" on alt lines usually mean the model is missing news
     min_prob: 0.04            # don't price rungs below a 4% chance
+    alt_hold: 0.07            # margin stripped from DK's one-sided alt prices before re-pricing
 
 capper:                       # the reasoning capper (Claude): its own reads and picks, its own record
   enabled: true               # needs the ANTHROPIC_API_KEY secret

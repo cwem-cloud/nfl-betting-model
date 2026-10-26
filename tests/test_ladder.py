@@ -98,3 +98,12 @@ def test_lower_projection_kills_overs_value():
     ev = pd.DataFrame([_eval_row(projection=3.0, side="under", market_prob=0.5)])
     lad = ladder.build(ev, _alt([(5.5, 250), (6.5, 500)]), pd.DataFrame(), {}, cfg)
     assert not lad["value"].any() and (lad[lad["dk_price"].notna()]["ev"] < -0.05).all()
+
+
+def test_far_off_projection_is_never_flagged():
+    """Pierce-style case: the model projects a fill-in's role for a backup when the starter returns."""
+    cfg = config()
+    ev = pd.DataFrame([_eval_row(stat="rush_yds", line=15.5, projection=39.6, position="RB")])
+    lad = ladder.build(ev, _alt([(19.5, 133), (24.5, 205)], market="player_rush_yds_alternate"), pd.DataFrame(), {}, cfg)
+    assert (lad[lad["dk_price"].notna()]["ev"] > 0.1).all()  # looks like a huge edge...
+    assert not lad["value"].any() and lad["context"].str.contains("missing news").all()  # ...but is not flagged

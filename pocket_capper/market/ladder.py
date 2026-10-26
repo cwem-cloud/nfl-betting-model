@@ -53,6 +53,7 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
     lcfg = cfg["props"].get("ladder", {})
     min_ev, max_ev, min_p = lcfg.get("min_ev", 0.05), lcfg.get("max_ev", 0.35), lcfg.get("min_prob", 0.04)
     hold = lcfg.get("alt_hold", 0.07)  # one-sided alt prices: strip roughly this much margin
+    max_gap = cfg["edges"].get("max_prop_edge_pct", 0.35)
     primary = cfg["books"]["primary"]
     k_by_stat = cfg["props"]["model_weight"]
     situation = {}
@@ -75,8 +76,12 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
         m = m_mkt + k_by_stat.get(r.stat, 0.15) * (r.projection - m_mkt)
         offers = dk_alt.get((r.event_id, norm_player(r.player), r.stat), {})
         points = sorted({float(p) for p in offers if p > r.line} | {x - 0.5 for x in DEFAULT_RUNGS[r.stat] if x - 0.5 > r.line})
+        # same guard as the main props: a projection this far from the market usually means missing news
+        # (e.g. a starter returning from injury whose fill-in's numbers the model is still projecting)
+        far_off = abs(r.projection - m_mkt) / max(m_mkt, 0.5) > max_gap
         ctx = "; ".join(filter(None, [situation.get(r.player_id, ""),
-                                       defense_note(r.stat, r.position, def_out.get(r.opp, []))]))
+                                       defense_note(r.stat, r.position, def_out.get(r.opp, [])),
+                                       "model far off the market - likely missing news, not flagged" if far_off else ""]))
         for pt in points:
             p_ours = nfl_props.prob_over(r.stat, m, pt)
             if not np.isfinite(p_ours) or p_ours < min_p:
@@ -94,7 +99,7 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
                 "stat": r.stat, "main_line": r.line, "market_mean": m_mkt, "projection": r.projection, "blended_mean": m,
                 "rung": int(round(pt + 0.5)), "point": pt, "model_prob": p, "fair_odds": om.prob_to_american(p),
                 "dk_price": price, "ev": ev,
-                "value": bool(price is not None and min_ev <= ev <= max_ev),
+                "value": bool(price is not None and not far_off and min_ev <= ev <= max_ev),
                 "context": ctx,
             })
     return pd.DataFrame(rows)

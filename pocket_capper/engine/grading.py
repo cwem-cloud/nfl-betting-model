@@ -70,6 +70,8 @@ def grade_all(log=print) -> dict:
     picks = db.read(db.picks, "WHERE status = 'pending'")
     stats = {"graded": 0, "clv_recorded": 0}
     if picks.empty:
+        if not db.read(db.ladder_plans, "WHERE status = 'pending'").empty:
+            grade_ladders(_results_nfl(), pd.Timestamp.now(tz="UTC"))
         return stats
     now = pd.Timestamp.now(tz="UTC")
     res_nfl = _results_nfl() if (picks["sport"] == "nfl").any() else pd.DataFrame()
@@ -133,8 +135,41 @@ def grade_all(log=print) -> dict:
                        profit_units=om.profit_units(p.units, p.price, status))
         stats["graded"] += 1
     grade_sharp_plays(res_nfl, res_cfb)
+    grade_ladders(res_nfl, now)
     log(f"Graded {stats['graded']} picks, CLV on {stats['clv_recorded']}")
     return stats
+
+
+LADDER_STAT_COL = {"receptions": "receptions", "rec_yds": "receiving_yards", "rush_yds": "rushing_yards",
+                   "pass_yds": "passing_yards"}
+
+
+def grade_ladders(res_nfl: pd.DataFrame, now) -> int:
+    """Settle paper/user ladders once the player's box score is in (void if he didn't play)."""
+    import json
+
+    from pocket_capper.market.ladder import settle
+
+    lp = db.read(db.ladder_plans, "WHERE status = 'pending'")
+    if lp.empty:
+        return 0
+    n, ps = 0, pd.DataFrame()
+    for r in lp.itertuples():
+        kick = pd.to_datetime(r.kickoff, utc=True, errors="coerce", format="ISO8601")
+        if pd.isna(kick) or kick > now - pd.Timedelta(hours=4):
+            continue
+        if ps.empty:
+            ps = nflverse.player_stats([int(str(r.game_id)[:4])])
+        row = ps[(ps["player_id"] == r.player_id) & (ps["game_id"] == str(r.game_id))] if "game_id" in ps else pd.DataFrame()
+        if row.empty:
+            if not res_nfl.empty and str(r.game_id) in set(res_nfl["game_id"]) and kick < now - pd.Timedelta(days=2):
+                db.update_ladder(r.id, status="void", profit_units=0.0)
+            continue
+        v = float(row.iloc[0][LADDER_STAT_COL[r.stat]] or 0)
+        profit = settle(json.loads(r.legs), v)
+        db.update_ladder(r.id, status="win" if profit > 0 else "loss", result_value=v, profit_units=profit)
+        n += 1
+    return n
 
 
 def _nba_result(p, side: str, kickoff, now, cache: dict):

@@ -7,6 +7,7 @@ Tables
   splits          bets% / money% snapshots
   sharp_plays     manual entries from sharp sources (e.g. Bambino) + their grading
   picks           every official play, graded with closing line value (source: model | capper)
+  ladder_plans    paper ladders (model-suggested, tiered 2/1.5/1/0.5/0.25U) and user-logged ladders, graded
   capper_reviews  the reasoning capper's read on each game it analysed (picks and passes)
   capper_notes    the capper's notebook: lessons rewritten from its own graded results
   boards          full slate output per run (game board, prop hub, TD zone) for the dashboard
@@ -87,6 +88,17 @@ capper_reviews = Table(
     Column("created_at", String), Column("sport", String), Column("game_id", String),
     Column("matchup", String), Column("kickoff", String), Column("model", String),
     Column("read", Text), Column("passes", Text), Column("payload", Text),
+)
+
+ladder_plans = Table(  # paper ladders (the model's suggested ladder per game) and ones the user logs
+    "ladder_plans", meta,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("created_at", String), Column("source", String),  # paper | user
+    Column("sport", String), Column("event_id", String), Column("game_id", String), Column("matchup", String),
+    Column("kickoff", String), Column("player", String), Column("player_id", String), Column("stat", String),
+    Column("market", String), Column("scale", Float), Column("risk", Float), Column("ev", Float),
+    Column("legs", Text), Column("context", Text),
+    Column("status", String), Column("result_value", Float), Column("profit_units", Float),
 )
 
 capper_notes = Table(  # the capper's notebook: lessons it has written from its own graded results
@@ -251,6 +263,11 @@ def refresh_pick(pick_id: str, line, price, ev) -> None:
 def update_pick(pick_id: str, **values) -> None:
     with engine().begin() as conn:
         conn.execute(update(picks).where(picks.c.pick_id == pick_id).values(**values))
+
+
+def update_ladder(plan_id: int, **values) -> None:
+    with engine().begin() as conn:
+        conn.execute(update(ladder_plans).where(ladder_plans.c.id == plan_id).values(**values))
 
 
 def update_sharp(play_id: int, **values) -> None:

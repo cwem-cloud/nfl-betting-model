@@ -40,6 +40,19 @@ def test_dashboard_renders(tmp_db):
         "read": "Read.", "passes": "Side.", "payload": "{}"}]))
     tmp_db.insert_df(tmp_db.capper_notes, pd.DataFrame([{"created_at": "2029-12-31", "graded_count": 6, "notes": "1. Lesson"}]))
 
+    # ladder board with an anchor (builder) and a graded paper ladder
+    from tests.test_ladder import _lemon_rows
+    from pocket_capper.market import ladder as ladmod
+    from pocket_capper.settings import config as _cfg
+    tmp_db.save_board("r1", "nfl", "ladder", _lemon_rows())
+    pl = ladmod.plan(_lemon_rows(), _cfg())
+    tmp_db.insert_df(tmp_db.ladder_plans, pd.DataFrame([{
+        "created_at": "2026-10-26", "source": "paper", "sport": "nfl", "event_id": "e1", "game_id": "2026_07_DAL_PHI",
+        "matchup": "DAL @ PHI", "kickoff": "2026-10-27T00:15:00Z", "player": "Makai Lemon", "player_id": "00-L",
+        "stat": "receptions", "market": "player_receptions", "scale": pl["scale"], "risk": pl["risk"], "ev": pl["ev"],
+        "legs": __import__("json").dumps(pl["legs"]), "context": "", "status": "win", "result_value": 7.0,
+        "profit_units": ladmod.settle(pl["legs"], 7)}]))
+
     at = AppTest.from_file("../app/app.py", default_timeout=60).run()
     assert not at.exception, at.exception
     text = " ".join(m.value for m in at.markdown)

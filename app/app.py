@@ -314,6 +314,69 @@ with tabs[3]:
         }), hide_index=True, width="stretch", height=480)
         st.caption(f"As of {lad_as_of} UTC. Take a rung only at or above its Fair price; ladder rungs move together, so size them small.")
 
+        # ---------------- Ladder builder
+        from pocket_capper.market import ladder as ladmod
+
+        st.markdown("#### 🧮 Ladder builder")
+        g_all = lad[lad["game"] == game]
+        if "kind" in g_all:
+            opts = [(p_, s_) for (p_, s_), r_ in g_all.groupby(["player", "stat"])
+                    if (r_["kind"] == "anchor").any() and r_["dk_price"].notna().sum() >= 2]
+        else:
+            opts = []
+        if not opts:
+            st.caption("No ladder with a priced main line in this game yet.")
+        else:
+            cfg_ = config()
+            tmpl = cfg_["props"]["ladder"].get("template", ladmod.DEFAULT_TEMPLATE)
+            b1, b2 = st.columns([3, 2])
+            choice = b1.selectbox("Player / market", opts, format_func=lambda o: f"{o[0]} - {STAT_LABEL.get(o[1], o[1])}",
+                                  key="lad_build")
+            size = b2.radio("Size", ["Auto", "Full", "Half", "Quarter"], horizontal=True, key="lad_size")
+            sc = {"Auto": None, "Full": 1.0, "Half": 0.5, "Quarter": 0.25}[size]
+            rows_ = g_all[(g_all["player"] == choice[0]) & (g_all["stat"] == choice[1])]
+            pl = ladmod.plan(rows_, cfg_, tmpl, sc)
+            if pl:
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Risk", f"{pl['risk']:g}U")
+                k2.metric("Expected value", f"{pl['ev']:+.2f}U")
+                k3.metric("Chance of profit", f"{pl['p_profit']:.0%}")
+                k4.metric("Size", f"{pl['scale']:g}x" + (" (auto)" if sc is None else ""))
+                st.caption(f"Template {' / '.join(f'{t:g}' for t in tmpl)}U on the main line and each next rung. "
+                           "Auto = full only when the main line is itself a model play, half when the ladder is +EV, "
+                           "quarter otherwise." + (f" Situation: {pl['context']}" if pl["context"] else ""))
+                c1, c2 = st.columns(2)
+                c1.dataframe(pd.DataFrame([{"Tier": l["tier"], "Rung": f"{l['rung']}+", "DK": fmt_american(l["price"]),
+                                            "Units": l["units"], "Wins": round(l["win"], 2),
+                                            "Chance": f"{l['prob']:.0%}"} for l in pl["legs"]]),
+                             hide_index=True, width="stretch")
+                c2.dataframe(pd.DataFrame([{"He finishes with": o["result"], "Chance": f"{o['prob']:.0%}",
+                                            "You": f"{o['profit']:+.2f}U"} for o in pl["outcomes"]]),
+                             hide_index=True, width="stretch")
+
+    # ---------------- Paper ladders
+    lp = db.read(db.ladder_plans)
+    if not lp.empty:
+        from pocket_capper.models.nfl_props import STAT_LABEL
+
+        st.markdown("#### 📒 Paper ladders")
+        st.caption("The model's suggested ladder for each game (best +EV plan with a situation behind it, auto-sized), "
+                   "locked before kickoff and graded, whether or not anyone bets it. This is how we learn whether "
+                   "ladder spots actually make money.")
+        rec = lp[(lp["source"] == "paper") & lp["status"].isin(["win", "loss"])]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Record", f"{(rec['status'] == 'win').sum()}-{(rec['status'] == 'loss').sum()}")
+        m2.metric("Units", f"{rec['profit_units'].sum():+.2f}U")
+        m3.metric("ROI", f"{rec['profit_units'].sum() / rec['risk'].sum():+.1%}" if len(rec) and rec["risk"].sum() else "—")
+        kk = pd.to_datetime(lp["kickoff"], utc=True, errors="coerce", format="ISO8601")
+        st.dataframe(pd.DataFrame({
+            "Kickoff": kk.dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d"), "Matchup": lp["matchup"],
+            "Ladder": lp["player"] + " " + lp["stat"].map(lambda s_: STAT_LABEL.get(s_, s_)),
+            "Rungs": lp["legs"].map(lambda j: " / ".join(f"{l['rung']}+ {l['units']:g}U" for l in json.loads(j))),
+            "Risk": lp["risk"], "EV": lp["ev"].round(2), "Result": lp["result_value"], "Status": lp["status"],
+            "P/L": lp["profit_units"].round(2), "Type": lp["source"],
+        }).sort_values("Kickoff", ascending=False), hide_index=True, width="stretch")
+
 # ------------------------------------------------------------------ Line Market
 with tabs[4]:
     st.subheader("📈 Line Market")

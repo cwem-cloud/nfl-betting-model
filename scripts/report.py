@@ -120,3 +120,18 @@ if len(rv):
     print("\n===== CAPPER GAME READS (latest) =====")
     for r in rv.sort_values("id", ascending=False).drop_duplicates("game_id").head(16).itertuples():
         print(f"\n{r.matchup} ({r.model}): {r.read}\n  passed: {r.passes}")
+
+lp = db.read(db.ladder_plans)
+if len(lp):
+    import json as _json
+
+    from pocket_capper.models.nfl_props import STAT_LABEL as _SL
+
+    rec = lp[(lp["source"] == "paper") & lp["status"].isin(["win", "loss"])]
+    print(f"\n===== PAPER LADDERS ({len(lp)} logged; paper record {(rec['status'] == 'win').sum()}-"
+          f"{(rec['status'] == 'loss').sum()}, {rec['profit_units'].sum():+.2f}U on {rec['risk'].sum():g}U) =====")
+    for r in lp.sort_values("kickoff").itertuples():
+        legs = " / ".join(f"{l['rung']}+ {fmt_american(l['price'])} {l['units']:g}U" for l in _json.loads(r.legs))
+        res = "" if r.status == "pending" else f" -> {r.result_value:g}, {r.status} {r.profit_units:+.2f}U"
+        print(f"[{r.source}] {r.kickoff[:10]} {r.matchup}: {r.player} {_SL.get(r.stat, r.stat)} | {legs} | "
+              f"risk {r.risk:g}U EV {r.ev:+.2f}U{res}")

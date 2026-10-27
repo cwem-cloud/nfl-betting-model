@@ -107,3 +107,71 @@ def test_far_off_projection_is_never_flagged():
     lad = ladder.build(ev, _alt([(19.5, 133), (24.5, 205)], market="player_rush_yds_alternate"), pd.DataFrame(), {}, cfg)
     assert (lad[lad["dk_price"].notna()]["ev"] > 0.1).all()  # looks like a huge edge...
     assert not lad["value"].any() and lad["context"].str.contains("missing news").all()  # ...but is not flagged
+
+
+def _lemon_rows():
+    """Last MNF's Makai Lemon receptions ladder as the board stored it (model probs, DK prices)."""
+    base = dict(event_id="e1", game_id="2026_07_DAL_PHI", matchup="DAL @ PHI", kickoff="2026-10-27T00:15:00Z",
+                player="Makai Lemon", player_id="00-L", team="PHI", opp="DAL", position="WR", stat="receptions",
+                market="player_receptions", main_line=3.5, context="+12% targets with WR DeVonta Smith out", value=False,
+                market_mean=4.50, projection=5.39, blended_mean=4.68)
+    rungs = [("anchor", 3.5, -156, 0.617), ("rung", 4.5, 131, 0.4276), ("rung", 5.5, 251, 0.2867),
+             ("rung", 6.5, 467, 0.181), ("rung", 7.5, 820, 0.1138), ("rung", 8.5, 1440, 0.0694)]
+    rows = []
+    for kind, pt, price, p in rungs:
+        rows.append(dict(base, kind=kind, point=pt, rung=int(pt + 0.5), dk_price=float(price), model_prob=p,
+                         fair_odds=(100 / p - 100) if p < 0.5 else -100 * p / (1 - p),
+                         ev=p * (1 + (price / 100 if price > 0 else 100 / -price)) - 1))
+    return pd.DataFrame(rows)
+
+
+def test_ladder_plan_matches_template_and_payouts():
+    cfg = config()
+    p = ladder.plan(_lemon_rows(), cfg, scale=1.0)
+    assert [l["units"] for l in p["legs"]] == [2.0, 1.5, 1.0, 0.5, 0.25]
+    assert [l["rung"] for l in p["legs"]] == [4, 5, 6, 7, 8]
+    assert p["risk"] == 5.25
+    by = {o["result"]: o for o in p["outcomes"]}
+    assert abs(by["under 4"]["profit"] + 5.25) < 1e-9 and abs(by["under 4"]["prob"] - 0.383) < 1e-3
+    assert abs(by["4"]["profit"] + 1.968) < 0.01
+    assert abs(by["7"]["profit"] - 7.842) < 0.01  # Lemon caught 7
+    assert abs(by["8+"]["profit"] - 10.142) < 0.01
+    assert abs(sum(o["prob"] for o in p["outcomes"]) - 1) < 1e-9
+    assert abs(p["ev"] - 0.04) < 0.02
+    assert abs(ladder.settle(p["legs"], 7) - 7.842) < 0.01 and ladder.settle(p["legs"], 3) == -5.25
+
+
+def test_ladder_auto_scale():
+    cfg = config()
+    rows = _lemon_rows()
+    assert ladder.plan(rows, cfg)["scale"] == 0.5  # anchor isn't model-grade, ladder slightly +EV -> half size
+    strong = rows.copy()
+    strong.loc[strong["kind"] == "anchor", "ev"] = 0.08
+    assert ladder.plan(strong, cfg)["scale"] == 1.0
+    weak = rows.copy()
+    weak["model_prob"] = weak["model_prob"] * 0.8
+    assert ladder.plan(weak, cfg)["scale"] == 0.25
+
+
+def test_paper_ladder_selection_and_grading(tmp_db, monkeypatch):
+    import json
+
+    from pocket_capper.engine import grading, slate
+
+    cfg = config()
+    rows = _lemon_rows()
+    picked = ladder.pick_paper_ladders(rows, cfg)
+    assert len(picked) == 1 and picked[0]["player"] == "Makai Lemon"
+    far = rows.assign(context="model far off the market - likely missing news, not flagged")
+    assert ladder.pick_paper_ladders(far, cfg) == []
+    slate._save_paper_ladders(picked, print)
+    slate._save_paper_ladders(picked, print)  # same game again: still one paper ladder
+    lp = tmp_db.read(tmp_db.ladder_plans)
+    assert len(lp) == 1 and lp["status"].iloc[0] == "pending"
+    ps = pd.DataFrame([{"player_id": "00-L", "game_id": "2026_07_DAL_PHI", "receptions": 7, "season": 2026}])
+    monkeypatch.setattr(grading.nflverse, "player_stats", lambda seasons: ps)
+    grading.grade_ladders(pd.DataFrame(), pd.Timestamp("2026-10-28T12:00:00Z"))
+    lp = tmp_db.read(tmp_db.ladder_plans).iloc[0]
+    legs = json.loads(lp["legs"])
+    assert lp["status"] == "win" and lp["result_value"] == 7
+    assert abs(lp["profit_units"] - ladder.settle(legs, 7)) < 1e-9 and lp["profit_units"] > 0

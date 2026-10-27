@@ -443,12 +443,13 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
     db.save_board(run_id, "nfl", "props", ev[ev["stat"] != "anytime_td"])
     db.save_board(run_id, "nfl", "attd", ev[ev["stat"] == "anytime_td"])
     if cfg["props"].get("ladder", {}).get("enabled", True):
-        _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj)
+        ev["game_id"] = ev["event_id"].map(gid_by_event)
+        _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj, props)
     log(f"Props: {int(ev['qualifies'].sum())} plays ({int((ev['qualifies'] & (ev['stat'] == 'anytime_td')).sum())} TD Zone)")
     return n
 
 
-def _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj) -> None:
+def _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj, props=None) -> None:
     """Alt-line ladders (informational, never auto-bet): fair odds per rung vs DK's alt prices."""
     from pocket_capper.market import ladder
 
@@ -465,11 +466,33 @@ def _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj) -> None:
     except Exception as e:
         log(f"defensive absences unavailable: {e}")
         def_out = {}
-    lad = ladder.build(ev[ev["stat"] != "anytime_td"], alt, pproj, def_out, cfg)
+    main_over = ladder.main_over_prices(props if props is not None else pd.DataFrame(), cfg["books"]["primary"])
+    lad = ladder.build(ev[ev["stat"] != "anytime_td"], alt, pproj, def_out, cfg, main_over)
     db.save_board(run_id, "nfl", "ladder", lad)
     if not lad.empty:
         log(f"Ladders: {lad.groupby(['player', 'stat']).ngroups} player markets, {int(lad['value'].sum())} value rungs "
             f"({len(alt)} DK alt prices)")
+        _save_paper_ladders(ladder.pick_paper_ladders(lad, cfg), log)
+
+
+def _save_paper_ladders(plans: list[dict], log) -> None:
+    """Lock the model's suggested ladder per game (first one issued stands, like picks) for tracking."""
+    if not plans:
+        return
+    have = db.read(db.ladder_plans, "WHERE source = 'paper'")
+    seen = set(have["game_id"].astype(str)) if not have.empty else set()
+    new = []
+    for p in plans:
+        if str(p["game_id"]) in seen or not p.get("game_id"):
+            continue
+        new.append({"created_at": db.now(), "source": "paper", "sport": "nfl", "event_id": p["event_id"],
+                    "game_id": str(p["game_id"]), "matchup": p["matchup"], "kickoff": str(p["kickoff"]),
+                    "player": p["player"], "player_id": p["player_id"], "stat": p["stat"], "market": p["market"],
+                    "scale": p["scale"], "risk": p["risk"], "ev": p["ev"], "legs": json.dumps(p["legs"]),
+                    "context": p["context"], "status": "pending"})
+    if new:
+        db.insert_df(db.ladder_plans, pd.DataFrame(new))
+        log(f"Paper ladders: {len(new)} new (" + "; ".join(f"{n['player']} {n['stat']}" for n in new) + ")")
 
 
 # ------------------------------------------------------------------ NBA

@@ -47,8 +47,38 @@ def test_returning_player_is_flagged():
     ps = ps[~((ps["player_id"] == "wr2") & (ps["week"] == 3))]  # missed the last game
     tp = pd.DataFrame({"team": ["TB"], "opp": ["NO"], "pts": [23.0], "margin": [0.0]})
     out = nfl_props.project_players(ps, pd.DataFrame(), 2026, 4, tp, out_players=set()).set_index("player_id")
-    assert "returning" in out.loc["wr2", "situation"]
-    assert "returning" not in out.loc["wr1", "situation"]
+    assert "missed the last game" in out.loc["wr2", "situation"]
+    assert "unstable role" not in out.loc["wr1", "situation"]  # WR rotations aren't flagged
+
+
+def test_backup_of_returning_lead_back_is_flagged_not_bet():
+    """Lloyd/Jacobs: the lead back missed weeks 1-2 and returned in week 3. The backup's role is unstable:
+    flagged, and none of his props/TDs/ladders qualify."""
+    from pocket_capper.market import evaluate
+
+    rows = []
+    for wk in (1, 2, 3):
+        rb2 = dict(carries=18, rushing_yards=80, targets=3, receptions=2, receiving_yards=15) if wk < 3 else \
+            dict(carries=5, rushing_yards=20, targets=1, receptions=1, receiving_yards=6)
+        rows += _week(wk, [("rb2", "Backup Back", "RB", rb2),
+                           ("wr1", "Wide One", "WR", dict(targets=10, receptions=6, receiving_yards=80)),
+                           ("qb", "Quarter Back", "QB", dict(attempts=33, completions=21, passing_yards=230))])
+        if wk == 3:
+            rows += _week(3, [("rb1", "Lead Back", "RB", dict(carries=17, rushing_yards=75, targets=2, receptions=2,
+                                                              receiving_yards=12))])
+    ps = pd.DataFrame(rows)
+    tp = pd.DataFrame({"team": ["TB"], "opp": ["NO"], "pts": [23.0], "margin": [0.0]})
+    out = nfl_props.project_players(ps, pd.DataFrame(), 2026, 4, tp, out_players=set()).set_index("player_id")
+    assert "unstable role: Lead Back back at RB" in out.loc["rb2", "situation"]
+    assert "unstable role" not in out.loc["wr1", "situation"]
+    assert evaluate._unstable(out.loc["rb2"].to_dict()) and not evaluate._unstable(out.loc["wr1"].to_dict())
+    # and its ladder is never flagged or picked as a paper ladder
+    ev = pd.DataFrame([_eval_row(player="Backup Back", player_id="rb2", stat="rush_yds", line=40.5,
+                                 projection=45.0, position="RB")])
+    alt = _alt([(49.5, 200), (59.5, 330)], player="Backup Back", market="player_rush_yds_alternate")
+    lad = ladder.build(ev, alt, out.reset_index()[["player_id", "situation"]], {}, config())
+    assert not lad["value"].any() and lad["context"].str.contains("unstable role").all()
+
 
 
 def _eval_row(**kw):
@@ -175,3 +205,16 @@ def test_paper_ladder_selection_and_grading(tmp_db, monkeypatch):
     legs = json.loads(lp["legs"])
     assert lp["status"] == "win" and lp["result_value"] == 7
     assert abs(lp["profit_units"] - ladder.settle(legs, 7)) < 1e-9 and lp["profit_units"] > 0
+
+
+def test_ladder_rungs_are_a_real_step_apart():
+    rows = _lemon_rows().assign(stat="rec_yds", market="player_reception_yds")
+    pts = [(13.5, -116, 0.55), (14.5, -106, 0.52), (19.5, 143, 0.40), (24.5, 204, 0.30), (29.5, 287, 0.22), (34.5, 400, 0.16)]
+    rows = rows.iloc[:len(pts)].copy()
+    rows["kind"] = ["anchor"] + ["rung"] * (len(pts) - 1)
+    rows["point"] = [p for p, _, _ in pts]
+    rows["rung"] = [int(p + 0.5) for p, _, _ in pts]
+    rows["dk_price"] = [float(pr) for _, pr, _ in pts]
+    rows["model_prob"] = [q for _, _, q in pts]
+    p = ladder.plan(rows, config(), scale=1.0)
+    assert [l["rung"] for l in p["legs"]] == [14, 20, 25, 30, 35]  # 15+ skipped: one yard above the anchor

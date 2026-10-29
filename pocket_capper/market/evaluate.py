@@ -231,6 +231,12 @@ def _implied_mean(stat: str, line: float, p_over: float) -> float:
     return (lo + hi) / 2
 
 
+def _unstable(pj) -> bool:
+    """Position-mate of a returning lead back: projection error ~3x normal, so never a play."""
+    sit = pj.get("situation") if hasattr(pj, "get") else None
+    return isinstance(sit, str) and nfl_props.UNSTABLE_ROLE in sit
+
+
 def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """One row per (player, market) DK offer with projection, probabilities and EV."""
     from pocket_capper.data.teams import norm_player
@@ -289,7 +295,8 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             k = pcfg["model_weight"]["anytime_td"]
             p_final = _logistic(_logit(p_mkt) + k * (_logit(p_model) - _logit(p_mkt)))
             ev = om.expected_value(p_final, price)
-            qualifies = edges["min_ev_attd"] <= ev <= edges.get("max_ev_attd", 1.0) and price <= edges["max_attd_odds"]
+            qualifies = (edges["min_ev_attd"] <= ev <= edges.get("max_ev_attd", 1.0) and price <= edges["max_attd_odds"]
+                         and not _unstable(pj))
             rows.append({
                 "event_id": ev_id, "player": pj["player"], "player_id": pj["player_id"], "team": pj["team"],
                 "opp": pj["opp"], "position": pj["position"], "market": market, "stat": stat, "side": "yes",
@@ -335,7 +342,7 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             best = cand if best is None or ev > best[0] else best
         ev, side, pm_, pk_, pf, price = best
         rel = (mean - line) / max(line, 0.5) if side == "over" else (line - mean) / max(line, 0.5)
-        qualifies = (edges["min_ev_prop"] <= ev <= edges.get("max_ev_prop", 1.0)
+        qualifies = (not _unstable(pj) and edges["min_ev_prop"] <= ev <= edges.get("max_ev_prop", 1.0)
                      and edges["min_prop_edge_pct"] <= rel <= edges["max_prop_edge_pct"])
         rows.append({
             "event_id": ev_id, "player": pj["player"], "player_id": pj["player_id"], "team": pj["team"],

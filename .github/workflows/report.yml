@@ -35,6 +35,31 @@ jobs:
       - run: python scripts/rescreen_pending.py
       - name: Run the slate (only when the commit message says [slate])
         if: contains(github.event.head_commit.message, '[slate]') || github.event_name == 'workflow_dispatch'
-        run: python scripts/run_slate.py
+        run: python scripts/run_slate.py --sports nfl
       - run: python scripts/report.py
+      - name: TNF ladders
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          import pandas as pd
+          from pocket_capper import db
+          from pocket_capper.market import ladder
+          from pocket_capper.settings import config
+          from pocket_capper.market.odds_math import fmt_american
+          pd.set_option("display.width", 250, "display.max_colwidth", 90)
+          lad, ts = db.latest_board("nfl", "ladder")
+          d = lad[lad["matchup"] == "CAR @ GB"]
+          print("ladder board", ts, "CAR@GB rows", len(d), "value", int(d["value"].sum()))
+          v = d[d["value"]][["player", "stat", "rung", "dk_price", "fair_odds", "ev", "context"]]
+          print(v.to_string(index=False))
+          plans = []
+          for (p, s), r in d.groupby(["player", "stat"]):
+              pl = ladder.plan(r, config())
+              if pl: plans.append((pl["ev"], p, s, pl))
+          for ev, p, s, pl in sorted(plans, reverse=True)[:5]:
+              legs = " / ".join(f"{l['rung']}+ {fmt_american(l['price'])} {l['units']:g}U" for l in pl["legs"])
+              print(f"PLAN {p} {s}: scale {pl['scale']} risk {pl['risk']:g}U EV {pl['ev']:+.2f}U p_profit {pl['p_profit']:.0%} | {legs} | {pl['context']}")
+          sit = d[d["context"].fillna("") != ""].drop_duplicates("player")[["player", "team", "context"]]
+          print(sit.to_string(index=False))
+          PY
       - run: python scripts/analyze.py

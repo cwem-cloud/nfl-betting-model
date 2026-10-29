@@ -35,6 +35,6 @@ jobs:
       - run: python scripts/rescreen_pending.py
       - name: Run the slate (only when the commit message says [slate])
         if: contains(github.event.head_commit.message, '[slate]') || github.event_name == 'workflow_dispatch'
-        run: python scripts/run_slate.py
+        run: python scripts/run_slate.py --sports nfl,cfb,nba
       - run: python scripts/report.py
       - run: python scripts/analyze.py

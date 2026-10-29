@@ -93,7 +93,8 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
         points = sorted({float(p) for p in offers if p > r.line} | {x - 0.5 for x in DEFAULT_RUNGS[r.stat] if x - 0.5 > r.line})
         # same guard as the main props: a projection this far from the market usually means missing news
         # (e.g. a starter returning from injury whose fill-in's numbers the model is still projecting)
-        far_off = abs(r.projection - m_mkt) / max(m_mkt, 0.5) > max_gap
+        far_off = abs(r.projection - m_mkt) / max(m_mkt, 0.5) > max_gap \
+            or nfl_props.UNSTABLE_ROLE in situation.get(r.player_id, "")
         ctx = "; ".join(filter(None, [situation.get(r.player_id, ""),
                                        defense_note(r.stat, r.position, def_out.get(r.opp, [])),
                                        "model far off the market - likely missing news, not flagged" if far_off else ""]))
@@ -134,6 +135,8 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
 # ---------------------------------------------------------------- ladder builder
 
 DEFAULT_TEMPLATE = [2.0, 1.5, 1.0, 0.5, 0.25]
+PAPER_MIN_EV = 0.005  # paper ladders need at least +0.5% of the units risked (not a +0.00U coin flip)
+RUNG_STEP = {"receptions": 1, "rec_yds": 5, "rush_yds": 5, "pass_yds": 25}
 
 
 def plan(rows: pd.DataFrame, cfg: dict, template: list[float] | None = None, scale: float | None = None) -> dict | None:
@@ -147,10 +150,18 @@ def plan(rows: pd.DataFrame, cfg: dict, template: list[float] | None = None, sca
     anchor = r[r["kind"] == "anchor"]
     if anchor.empty:
         return None
-    rungs = r[(r["kind"] == "rung") & (r["point"] > anchor["point"].iloc[0])]
-    picked = pd.concat([anchor.head(1), rungs.head(len(template) - 1)])
+    step = RUNG_STEP.get(str(anchor["stat"].iloc[0]), 1)
+    chosen, last = [anchor.head(1)], float(anchor["point"].iloc[0])
+    for _, rr in r[r["kind"] == "rung"].iterrows():  # each tier at least one real step above the last
+        if len(chosen) == len(template):
+            break
+        if rr["point"] >= last + step - 1e-9:
+            chosen.append(rr.to_frame().T)
+            last = float(rr["point"])
+    picked = pd.concat(chosen)
     if len(picked) < 2:
         return None
+    picked = picked.astype({"point": float, "dk_price": float, "model_prob": float, "rung": int})
     probs = list(picked["model_prob"].astype(float))
     for i in range(1, len(probs)):  # a higher rung can't be likelier than a lower one
         probs[i] = min(probs[i], probs[i - 1])
@@ -204,10 +215,10 @@ def pick_paper_ladders(lad: pd.DataFrame, cfg: dict) -> list[dict]:
         best = None
         for _, rows in g.groupby(["player", "stat"]):
             ctx = rows["context"].fillna("").iloc[0]
-            if "missing news" in ctx or not (ctx or rows["value"].any()):
+            if "missing news" in ctx or nfl_props.UNSTABLE_ROLE in ctx or not (ctx or rows["value"].any()):
                 continue
             p = plan(rows, cfg)
-            if p and p["ev"] > 0 and (best is None or p["ev"] > best["ev"]):
+            if p and p["ev"] >= PAPER_MIN_EV * p["risk"] and (best is None or p["ev"] > best["ev"]):
                 best = p
         if best:
             out.append(best)

@@ -30,6 +30,11 @@ NB_DISPERSION = {"receptions": 0.15, "rush_att": 0.19, "pass_tds": 0.03}
 # 2025 walk-forward on the 490 player-weeks with a teammate ruled out: 0.5 beat an even split slightly
 # (carries MAE 1.68 -> 1.63, rec yds 22.8 -> 22.6); 0.7-0.9 overshot. Inheritors still run a bit high.
 SAME_POS_SHARE = 0.5
+# A player with at least this share of targets or carries (in the games he played) counts as a regular whose
+# absences make his position-mates' numbers from those games a fill-in role.
+RETURN_KEY_SHARE = 0.45      # lead back = at least this share of carries in the games he played
+RETURN_POSITIONS = {"RB"}     # WR rotations: fill-in work mostly sticks, no measurable instability
+UNSTABLE_ROLE = "unstable role"
 
 MARKET_STAT = {
     "player_pass_yds": "pass_yds", "player_pass_tds": "pass_tds", "player_pass_attempts": "pass_att",
@@ -116,13 +121,34 @@ def project_players(
         recent = players[players["weeks_ago"] <= players["weeks_ago"].min() + 3]
         ids = set(recent["player_id"]) - out_players
         # redistribute share of OUT players proportionally
-        shares = {}
-        for pid, grp in players.groupby("player_id"):
+        def share_of(grp):
             wts = _decay_weights(grp["weeks_ago"])
             tgw = tg.set_index("week").loc[grp["week"]]
             tshare = (grp["targets"].fillna(0).values * wts).sum() / max((tgw["targets"].values * wts).sum(), 1)
             cshare = (grp["carries"].fillna(0).values * wts).sum() / max((tgw["carries"].values * wts).sum(), 1)
-            shares[pid] = (tshare, cshare)
+            return tshare, cshare
+
+        shares = {pid: share_of(grp) for pid, grp in players.groupby("player_id")}
+        pos_now = players.sort_values("week").groupby("player_id")["position"].last().to_dict()
+        name_now = players.sort_values("week").groupby("player_id")["player_display_name"].last().to_dict()
+        # Returning lead backs: when an active lead RB missed some of the team's games, his position-mates'
+        # role is unstable (Pierce while Barkley sat, Lloyd while Jacobs was away). 2025 walk-forward on those
+        # 107 player-weeks: carries MAE 2.95 vs 1.15 overall, and dropping the fill-in games made it worse
+        # (3.12) - backups keep part of the role and the market prices that. So we don't re-project them;
+        # we flag them, and their props/TDs/ladders don't qualify.
+        team_weeks = set(tg["week"])
+        missed_by = {pid: team_weeks - set(players.loc[players["player_id"] == pid, "week"])
+                     for pid in ids if pos_now.get(pid) in RETURN_POSITIONS
+                     and shares.get(pid, (0, 0))[1] >= RETURN_KEY_SHARE}
+        return_notes = {}
+        for pid in ids:
+            skip, who = set(), []
+            for key, missed in missed_by.items():
+                if key != pid and missed and pos_now.get(key) == pos_now.get(pid):
+                    skip |= missed
+                    who.append(name_now.get(key, key))
+            if skip:
+                return_notes[pid] = f"{UNSTABLE_ROLE}: {', '.join(who)} back at {pos_now.get(pid)}"
         # Work left behind by OUT teammates goes mostly to the same position group (a lead RB's carries go
         # to the other backs, not spread across the whole offense), the rest across everyone active.
         pos_of = players.sort_values("week").groupby("player_id")["position"].last().to_dict()
@@ -165,7 +191,7 @@ def project_players(
             tshare, cshare = shares[pid]
             tshare = (tshare + inherit[pid][0]) * scale_t
             cshare = (cshare + inherit[pid][1]) * scale_c
-            situation = list(notes[pid])
+            situation = list(notes[pid]) + ([return_notes[pid]] if pid in return_notes else [])
             if int(grp["week"].max()) < team_last_week:
                 situation.append("returning: missed the last game (recent box scores understate his role)")
             tot_tgt, tot_car = grp["targets"].fillna(0).sum(), grp["carries"].fillna(0).sum()

@@ -35,6 +35,22 @@ jobs:
       - run: python scripts/rescreen_pending.py
       - name: Run the slate (only when the commit message says [slate])
         if: contains(github.event.head_commit.message, '[slate]') || github.event_name == 'workflow_dispatch'
-        run: python scripts/run_slate.py
+        run: python scripts/run_slate.py --sports nfl
+      - name: Apply the new rules to open items
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          import pandas as pd
+          from pocket_capper import db
+          p = db.read(db.picks, "WHERE status = 'pending' AND player = 'MarShawn Lloyd'")
+          for r in p.itertuples():
+              db.update_pick(r.pick_id, status="void", profit_units=0.0,
+                             rationale="VOIDED by rule change: unstable role (Josh Jacobs back at RB). " + (r.rationale or ""))
+              print("voided", r.selection, r.matchup)
+          lp = db.read(db.ladder_plans, "WHERE status = 'pending' AND source = 'paper' AND player = 'Dohnte Meyers'")
+          for r in lp.itertuples():
+              db.update_ladder(r.id, status="void", profit_units=0.0, context="voided: rungs 1 yard apart (builder bug, fixed)")
+              print("voided paper ladder", r.player, r.stat)
+          PY
       - run: python scripts/report.py
       - run: python scripts/analyze.py

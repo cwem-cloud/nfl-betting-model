@@ -63,6 +63,9 @@ def test_dashboard_renders(tmp_db):
         "legs": __import__("json").dumps(pl["legs"]), "context": "", "status": "win", "result_value": 7.0,
         "profit_units": ladmod.settle(pl["legs"], 7)}]))
 
+    tmp_db.save_board("r1", "nfl", "arbs", pd.DataFrame([{"kind": "middle", "event_id": "e1", "matchup": "BUF @ KC",
+        "market": "spread", "player": "", "a": "Home -2.5 -110 @ DK", "b": "Away +3.5 -110 @ FanDuel", "edge": -0.045,
+        "window": "home margin 3", "stake_a": 50.0, "stake_b": 50.0, "detail": "both win on home margin 3"}]))
     at = AppTest.from_file("../app/app.py", default_timeout=60).run()
     assert not at.exception, at.exception
     text = " ".join(m.value for m in at.markdown)

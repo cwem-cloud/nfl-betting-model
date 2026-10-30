@@ -152,5 +152,5 @@ def test_notebook_rewrites_after_enough_graded_picks(tmp_db, monkeypatch):
                            profit_units=0.45 if i % 2 else -0.5, result_value=2.0)
     brain = capper.ApiBrain(FakeClient({}, notes="1. Unders on capped-role WRs held up (3-3)."))
     assert capper.update_notebook(brain, config(), print, "nfl")
-    assert "capped-role" in capper.notebook("nfl") and "capped-role" not in capper.notebook("nba")
+    assert "capped-role" in capper.notebook("nfl")
     assert not capper.update_notebook(brain, config(), print, "nfl")  # nothing new graded since

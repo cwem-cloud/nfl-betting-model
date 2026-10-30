@@ -25,7 +25,9 @@ trk = p[db.is_tracking(p)].copy()  # switched-off markets, logged but not bet
 cap = p[db.is_capper(p)].copy()    # the reasoning capper's own picks (own record)
 p = p[~db.off_book(p)].copy()
 p["kick"] = pd.to_datetime(p["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
-p["price_s"] = p["price"].map(fmt_american)
+from pocket_capper.market.market import BOOK_NAME as _BN
+
+p["price_s"] = p["price"].map(fmt_american) + " @ " + p["book"].fillna("draftkings").map(lambda b: _BN.get(b, b))
 
 g = p[p["status"].isin(["win", "loss", "push"])].copy()
 print(f"\n===== GRADED RESULTS ({len(g)} picks) =====")
@@ -40,6 +42,14 @@ if len(g):
                           "clv_pts_avg": f"{c['avg_pts']:+.2f}" if c["n"] else "-",
                           "beat_close": f"{c['beat']:.0%}" if c["n"] else "-",
                           "worse_than_close": f"{c['worse']:.0%}" if c["n"] else "-"})
+    rules = config().get("rules", {})
+    since = g[pd.to_datetime(g["created_at"], utc=True, errors="coerce", format="ISO8601")
+              >= pd.Timestamp(rules.get("version", "2000-01-01"), tz="UTC")]
+    c_now = clv_summary(since)
+    print(f"\nHEADLINE - RULES v{rules.get('version')} (frozen through week {rules.get('frozen_through_week')}): "
+          + (f"beat the close {c_now['beat']:.0%} of {c_now['n']} picks, avg {c_now['avg_pts']:+.2f} pts | " if c_now["n"] else "no closes yet | ")
+          + f"record {(since['status'] == 'win').sum()}-{(since['status'] == 'loss').sum()}, {since['profit_units'].sum():+.2f}U"
+          + "\n  (closing-line value is the edge test; the record needs hundreds of picks to mean much)")
     print("\nOVERALL"); print(summ(g).to_string())
     print("\nBY SPORT/TYPE"); print(g.groupby(["sport", "category"]).apply(summ, include_groups=False).to_string())
     print("\nEVERY GRADED PICK")
@@ -147,6 +157,14 @@ if len(ang):
     if len(ao):
         print("\n----- open angle picks -----")
         print(ao.sort_values(["kick", "matchup"])[["kick", "matchup", "selection", "price_s", "key"]].to_string(index=False))
+
+for _sport in ("nfl", "cfb"):
+    for _name in ("arbs", "prop_arbs"):
+        ab, ab_at = db.latest_board(_sport, _name)
+        if ab is not None and not ab.empty:
+            print(f"\n===== {_sport.upper()} {'PROP ' if _name == 'prop_arbs' else ''}ARBS & MIDDLES across your books "
+                  f"(as of {ab_at}; $100 total stake, prices move fast) =====")
+            print(ab[["kind", "matchup", "player", "a", "b", "stake_a", "stake_b", "detail"]].head(25).to_string(index=False))
 
 rv = db.read(db.capper_reviews)
 if len(rv):

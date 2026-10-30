@@ -31,6 +31,16 @@ def evaluate_game(
     scfg = cfg["sports"][sport]
     primary = cfg["books"]["primary"]
     sharp_books = cfg["books"]["sharp"]
+    mine = cfg["books"].get("mine", [primary])
+    gap = cfg["books"].get("max_shop_gap", 0.06)
+
+    def best(market, side, point, dk_price):
+        """Line shopping: the best price among the books we bet, at DK's number."""
+        rows = board[(board["event_id"] == event_id) & (board["market"] == market) & (board["side"] == side)]
+        got = mk.shop(rows, mine, point, dk_price, gap)
+        if got is None or dk_price is None or om.american_to_decimal(got[1]) <= om.american_to_decimal(dk_price):
+            return primary, dk_price
+        return got
     msig, tsig = scfg["margin_sigma"], scfg["total_sigma"]
     mu, tot = proj["fair_margin"], proj["home_pts"] + proj["away_pts"]
 
@@ -81,8 +91,8 @@ def evaluate_game(
             pmk = {"home": ph * (1 - pm["push"]), "away": pa * (1 - pm["push"]), "push": pm["push"]}
         w = scfg["model_weight_side"]
         for side in ("home", "away"):
-            price = dk_sp[side][1]
             line = home_line if side == "home" else -home_line
+            book, price = best("spread", side, dk_sp[side][0], dk_sp[side][1])
             p_model = pm[side]
             p_mkt = pmk[side]
             p_push = w * pm["push"] + (1 - w) * pmk["push"]
@@ -99,7 +109,7 @@ def evaluate_game(
                 + [dict(m, direction=-1) for m in manual if m["market"] == "spread" and m["side"] != side],
             )
             candidates.append({
-                "category": "side", "market": "spread", "side": side, "line": line, "price": price,
+                "category": "side", "market": "spread", "side": side, "line": line, "price": price, "book": book,
                 "fair_line": round(fair_line * 2) / 2, "edge_pts": edge_pts,
                 "model_prob": p_model, "market_prob": p_mkt, "final_prob": p_final, "push_prob": p_push,
                 "ev": ev, "signals": sig,
@@ -117,7 +127,7 @@ def evaluate_game(
             pmk = {"over": po * (1 - pm["push"]), "under": pu * (1 - pm["push"]), "push": pm["push"]}
         w = scfg["model_weight_total"]
         for side in ("over", "under"):
-            price = dk_tot[side][1]
+            book, price = best("total", side, dk_tot[side][0], dk_tot[side][1])
             p_model, p_mkt = pm[side], pmk[side]
             p_push = w * pm["push"] + (1 - w) * pmk["push"]
             p_final = w * p_model + (1 - w) * p_mkt
@@ -131,7 +141,7 @@ def evaluate_game(
                 + [dict(m, direction=-1) for m in manual if m["market"] == "total" and m["side"] != side],
             )
             candidates.append({
-                "category": "total", "market": "total", "side": side, "line": tl, "price": price,
+                "category": "total", "market": "total", "side": side, "line": tl, "price": price, "book": book,
                 "fair_line": proj["fair_total"], "edge_pts": edge_pts,
                 "model_prob": p_model, "market_prob": p_mkt, "final_prob": p_final, "push_prob": p_push,
                 "ev": ev, "signals": sig,
@@ -152,7 +162,7 @@ def evaluate_game(
             pm_ = p_home_model if side == "home" else 1 - p_home_model
             pk_ = p_home_mkt if side == "home" else 1 - p_home_mkt
             pf = w * pm_ + (1 - w) * pk_
-            price = dk_ml[side][1]
+            book, price = best("ml", side, None, dk_ml[side][1])
             ev = om.expected_value(pf, price)
             sig = [s for s in mk.sharp_signals(
                 side=side, market="ml", dk_point=None, sharp_point=None, mv={}, split=splits.get(("ml", side)),
@@ -160,7 +170,7 @@ def evaluate_game(
                 + [dict(m, direction=-1) for m in manual if m["market"] == "ml" and m["side"] != side],
             )]
             candidates.append({
-                "category": "ml", "market": "ml", "side": side, "line": None, "price": price,
+                "category": "ml", "market": "ml", "side": side, "line": None, "price": price, "book": book,
                 "fair_line": om.prob_to_american(pm_), "edge_pts": None,
                 "model_prob": pm_, "market_prob": pk_, "final_prob": pf, "push_prob": 0.0,
                 "ev": ev, "signals": sig,
@@ -237,6 +247,14 @@ def _unstable(pj) -> bool:
     return isinstance(sit, str) and nfl_props.UNSTABLE_ROLE in sit
 
 
+def _shop_prop(grp, mine, side, point, dk_price, primary, gap):
+    """Line shopping for a prop: best price among our books at DK's line (same player, market, side)."""
+    got = mk.shop(grp[grp["side"] == side], mine, point, dk_price, gap)
+    if got is None or om.american_to_decimal(got[1]) <= om.american_to_decimal(dk_price):
+        return primary, dk_price
+    return got
+
+
 def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """One row per (player, market) DK offer with projection, probabilities and EV."""
     from pocket_capper.data.teams import norm_player
@@ -244,6 +262,8 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
     if props_snap.empty or proj.empty:
         return pd.DataFrame()
     primary = cfg["books"]["primary"]
+    mine = cfg["books"].get("mine", [primary])
+    gap = cfg["books"].get("max_shop_gap", 0.06)
     edges = cfg["edges"]
     pcfg = cfg["props"]
     board = props_snap.sort_values("fetched_at").groupby(
@@ -279,7 +299,7 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             yes = dk[dk["side"] == "yes"]
             if yes.empty:
                 continue
-            price = float(yes["price"].iloc[0])
+            book, price = _shop_prop(grp, mine, "yes", None, float(yes["price"].iloc[0]), primary, gap)
             fair = []
             for bk, b in grp.groupby("book"):
                 y, n = b[b["side"] == "yes"], b[b["side"] == "no"]
@@ -300,7 +320,7 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             rows.append({
                 "event_id": ev_id, "player": pj["player"], "player_id": pj["player_id"], "team": pj["team"],
                 "opp": pj["opp"], "position": pj["position"], "market": market, "stat": stat, "side": "yes",
-                "line": None, "price": price, "projection": float(pj.get("exp_tds", np.nan)),
+                "line": None, "price": price, "book": book, "projection": float(pj.get("exp_tds", np.nan)),
                 "model_prob": p_model, "market_prob": p_mkt, "final_prob": p_final,
                 "fair_odds": om.prob_to_american(p_final), "ev": ev, "books": len(fair),
                 "units": om.size_units(p_final, price, 0, cfg["units"], cfg["units"]["max_units_attd"]) if qualifies else 0.0,
@@ -337,17 +357,18 @@ def evaluate_props(props_snap: pd.DataFrame, proj: pd.DataFrame, cfg: dict) -> p
             ("over", p_over_model, p_over_mkt, p_over_final, float(over["price"].iloc[0])),
             ("under", 1 - p_over_model, 1 - p_over_mkt, 1 - p_over_final, float(under["price"].iloc[0])),
         ):
+            book, price = _shop_prop(grp, mine, side, line, price, primary, gap)
             ev = om.expected_value(pf, price)
-            cand = (ev, side, pm_, pk_, pf, price)
+            cand = (ev, side, pm_, pk_, pf, price, book)
             best = cand if best is None or ev > best[0] else best
-        ev, side, pm_, pk_, pf, price = best
+        ev, side, pm_, pk_, pf, price, book = best
         rel = (mean - line) / max(line, 0.5) if side == "over" else (line - mean) / max(line, 0.5)
         qualifies = (not _unstable(pj) and edges["min_ev_prop"] <= ev <= edges.get("max_ev_prop", 1.0)
                      and edges["min_prop_edge_pct"] <= rel <= edges["max_prop_edge_pct"])
         rows.append({
             "event_id": ev_id, "player": pj["player"], "player_id": pj["player_id"], "team": pj["team"],
             "opp": pj["opp"], "position": pj["position"], "market": market, "stat": stat, "side": side,
-            "line": line, "price": price, "projection": float(mean), "model_prob": pm_, "market_prob": pk_,
+            "line": line, "price": price, "book": book, "projection": float(mean), "model_prob": pm_, "market_prob": pk_,
             "final_prob": pf, "fair_odds": om.prob_to_american(pf), "ev": ev, "books": len(fair),
             "units": om.size_units(pf, price, 0, cfg["units"], cfg["units"]["max_units_prop"]) if qualifies else 0.0,
             "qualifies": qualifies,

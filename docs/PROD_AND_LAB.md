@@ -15,7 +15,6 @@ free to try many things because trying costs nothing.
 | Blind projections | Team ratings and player usage projected **before** any line is pulled |
 | Market anchor | Probabilities start from the de-vigged market and move only part of the way toward the model (sides 20%, props by stat) |
 | On the card | NFL spreads + ML, NFL player props + anytime TD, CFB totals (half stakes) |
-| Tracking only | NFL totals (2-8 live), CFB spreads / ML: priced and graded as if bet, never bet |
 | Line shopping | Every pick takes the best price among **DK, FanDuel, BetMGM, Fanatics** at DK's number; a price more than 6% (implied) better than DK's is treated as stale data |
 | Sizing | ¼ Kelly, 0.5-3U, daily exposure caps per sport and bucket |
 | Guards | EV caps ("too good to be true"), no chasing moved lines, model-far-off-market = missing news, unstable roles (a lead back returning) |
@@ -32,7 +31,7 @@ re-run after inactives, odds snapshots for line movement and CLV, Tuesday gradin
 | Situational angles (travel, bye, blowout bounce, wind, ...) | `models/angles.py` | shadow picks `source=angle` |
 | Matchup factors (fill-in corners, coverage LBs, DL/OL starters out) | `models/matchups.py` | shadow prop picks `source=angle` |
 | Stacks (2+ angles or factors on one bet) | same | `angle-stack`, `angle-stack_proven`, `angle-mstack` |
-| Switched-off markets | `sports.*.markets` | `tracking=1` |
+| Switched-off markets: NFL totals (2-8 live), CFB spreads / ML | `sports.*.markets` | `tracking=1`, sized as if bet |
 | Paper ladders | `market/ladder.py` | `ladder_plans` |
 | Reasoning capper (Claude) | `engine/capper.py` | `source=capper` (dormant until a token is set) |
 

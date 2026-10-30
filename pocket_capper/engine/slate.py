@@ -17,7 +17,7 @@ from pocket_capper.data import nflverse, odds_api, splits as splits_src, teams, 
 from pocket_capper.engine import rationale
 from pocket_capper.market import evaluate
 from pocket_capper.market.odds_math import american_to_prob, fmt_american
-from pocket_capper.models import nfl_model, nfl_props, trends
+from pocket_capper.models import angles, matchups, nfl_model, nfl_props, trends
 from pocket_capper.settings import config, secret
 
 
@@ -154,7 +154,7 @@ def _finalize_pick(p: dict, blind_summary: str, dk_summary: str, sharp_summary: 
     return p
 
 
-def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of, trend_fn=None):
+def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of, trend_fn=None, angle_fn=None):
     """Shared game evaluation loop. Returns number of picks written."""
     board = pd.DataFrame()
     snap = pd.DataFrame()
@@ -169,7 +169,7 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
     manual = _manual_for(sport)
     existing = _existing_pick_ids(sport)
     existing_real = _existing_pick_ids(sport, real_only=True)
-    rows, n, queue, tracked = [], 0, [], []
+    rows, n, queue, tracked, angle_picks = [], 0, [], [], []
     for _, g in games.iterrows():
         pr = projs[projs["game_id"] == g["game_id"]]
         if pr.empty:
@@ -203,6 +203,10 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         context = list(pr["adjust_notes"])
         if trend_fn:
             context += trend_fn(g, row)
+        fired = angle_fn(g, row) if angle_fn else []
+        if fired:
+            row = {**row, "angles": "; ".join(f"{f['label']} -> {_bet_label(g, f)}" for f in fired)}
+            angle_picks += _angle_picks(sport, run_id, g, row, fired, existing, cfg)
         blind = (f"{g['away']} {pr['away_pts']:.1f} - {g['home']} {pr['home_pts']:.1f} "
                  f"(fair {g['home']} {pr['fair_spread_home']:+g}, total {pr['fair_total']:g}, "
                  f"{g['home']} win {pr['home_win_prob']:.0%})")
@@ -215,12 +219,12 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
             if _opposite_ids(p["pick_id"]) & existing_real:  # never hedge against our own open play
                 continue
             # written after the whole slate is evaluated, best EV first, within the day's exposure budget
-            queue.append((c, p, g, row, blind, context, best))
+            queue.append((c, p, g, row, blind, context + _angle_context(fired, c["market"], c["side"]), best))
         for c in sorted((c for c in cands if c.get("track_units", 0) > 0), key=lambda c: -c["ev"]):
             p = _pick_record(sport, run_id, g, c, pr, {})
             if p["pick_id"] not in existing:  # switched-off market: logged for evaluation, never bet
                 p.update(units=c["track_units"], tracking=1)
-                tracked.append((c, p, g, row, blind, context))
+                tracked.append((c, p, g, row, blind, context + _angle_context(fired, c["market"], c["side"])))
         # refresh every open pick on this game with the current line and its current EV
         for c in cands:
             pid = _pick_record(sport, run_id, g, c, pr, {})["pick_id"]
@@ -247,6 +251,8 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
         p["rationale"] = (f"**TRACKING ONLY - not a bet.** {sport.upper()} {c['market']} is switched off; "
                           f"logged at {p['units']:g}U to measure it against the close.\n\n" + p["rationale"])
         db.upsert_pick(p)
+    for p in angle_picks:
+        db.upsert_pick(p)
     for r in rows:  # best lists were filled in place after the rows were built
         if "_best" in r:
             b = r.pop("_best")
@@ -254,8 +260,120 @@ def _game_rows(sport, run_id, games, projs, odds, cfg, log, match_event, name_of
     out = pd.DataFrame(rows)
     db.save_board(run_id, sport, "games", out)
     log(f"{sport.upper()}: {len(out)} games on the board, {n} new plays"
-        + (f" (+{len(tracked)} tracking-only)" if tracked else ""))
+        + (f" (+{len(tracked)} tracking-only)" if tracked else "")
+        + (f" (+{len(angle_picks)} angle-lab shadow picks)" if angle_picks else ""))
     return n
+
+
+# ------------------------------------------------------------------ angle lab (shadow-tracked, never bet)
+
+def _bet_label(g, f) -> str:
+    return g["home"] if f["side"] == "home" else g["away"] if f["side"] == "away" else f["side"]
+
+
+def _angle_context(fired: list[dict], market: str, side: str) -> list[str]:
+    pro, con = angles.agreeing(fired, market, side)
+    out = []
+    if pro:
+        out.append(f"Angle lab: {len(pro)} angle(s) behind this bet - " + "; ".join(f"{f['label']} ({f['why']})" for f in pro))
+    if con:
+        out.append("Angle lab: against this bet - " + "; ".join(f"{f['label']} ({f['why']})" for f in con))
+    return out
+
+
+def _dk_line(row: dict, market: str, side: str):
+    def num(k):
+        v = row.get(k)
+        return None if v is None or pd.isna(v) else float(v)
+    if market == "spread":
+        sp = num("dk_spread_home")
+        if sp is None:
+            return None, None
+        return (sp, num("dk_spread_home_price")) if side == "home" else (-sp, num("dk_spread_away_price"))
+    return num("dk_total"), num("dk_over_price" if side == "over" else "dk_under_price")
+
+
+def _angle_picks(sport, run_id, g, row, fired, existing, cfg) -> list[dict]:
+    """One tracking-only pick per angle that fires (and one per stack of 2+ on the same bet), at DK's price."""
+    acfg = cfg.get("angles", {})
+    if not acfg.get("enabled", True):
+        return []
+    proven = set(acfg.get("proven", []))
+    bets = [(f["key"], f["market"], f["side"], f"{f['label']} ({f['why']})") for f in fired]
+    for st in angles.stacks(fired):
+        bets.append(("stack", st["market"], st["side"], "Stack: " + " + ".join(st["labels"])))
+        if sum(k in proven for k in st["keys"]) >= 2:
+            bets.append(("stack_proven", st["market"], st["side"], "Stack of proven angles: " + " + ".join(st["labels"])))
+    out = []
+    for key, market, side, why in bets:
+        line, price = _dk_line(row, market, side)
+        pid = f"{sport}|{g['game_id']}|{market}|{side}|angle-{key}"
+        if line is None or price is None or pid in existing:
+            continue
+        team = g["home"] if side == "home" else g["away"]
+        out.append({
+            "pick_id": pid, "run_id": run_id, "sport": sport, "category": "side" if market == "spread" else "total",
+            "event_id": g.get("event_id"), "game_id": str(g["game_id"]), "kickoff": str(g.get("kickoff")),
+            "matchup": f"{g['away']} @ {g['home']}", "market": market,
+            "selection": f"{team} {line:+g}" if market == "spread" else f"{side.title()} {line:g}",
+            "line": line, "price": price, "book": cfg["books"]["primary"], "units": float(acfg.get("units", 1.0)),
+            "signals": [], "tracking": 1, "source": "angle",
+            "rationale": f"**ANGLE LAB - tracking only, not a bet.** {why}",
+        })
+    return out
+
+
+def _matchup_picks(run_id, mfac, props, ev, cfg, existing) -> list[dict]:
+    """Tracking-only prop picks for every matchup factor (and 2+ factors agreeing), at DK's main line."""
+    from pocket_capper.data.teams import norm_player
+
+    acfg = cfg.get("angles", {})
+    if mfac.empty or ev.empty or props.empty or not acfg.get("enabled", True):
+        return []
+    market_of = {v: k for k, v in nfl_props.MARKET_STAT.items()}
+    dk = props[props["book"] == cfg["books"]["primary"]].copy()
+    dk["key"] = dk["player"].map(norm_player)
+    if "fetched_at" in dk:
+        dk = dk.sort_values("fetched_at").groupby(["event_id", "market", "key", "side"], as_index=False).last()
+    price_of = {(r.event_id, r.market, r.key, r.side): (r.point, r.price) for r in dk.itertuples()}
+    main = {(r.player_id, r.stat): r for r in ev.itertuples() if r.line is not None and pd.notna(r.line)}
+    bets = {}
+    for f in mfac.to_dict("records"):
+        for stat in f["stats"]:
+            if (f["player_id"], stat) in main:
+                bets.setdefault((f["player_id"], stat, f["direction"]), []).append(f)
+    out = []
+    for (pid_, stat, d), fs in bets.items():
+        r = main[(pid_, stat)]
+        side = "over" if d > 0 else "under"
+        got = price_of.get((r.event_id, market_of[stat], norm_player(r.player), side))
+        if not got or pd.isna(got[1]) or float(got[0]) != float(r.line):
+            continue
+        keys = [(f["key"], f["note"]) for f in fs] + ([("mstack", " + ".join(f["note"] for f in fs))] if len(fs) >= 2 else [])
+        for key, note in keys:
+            pid = f"nfl|{r.game_id}|{market_of[stat]}|{side}|{r.player_id}|angle-{key}"
+            if pid in existing:
+                continue
+            label = nfl_props.STAT_LABEL[stat]
+            out.append({
+                "pick_id": pid, "run_id": run_id, "sport": "nfl", "category": "prop", "event_id": r.event_id,
+                "game_id": r.game_id, "kickoff": r.kickoff, "matchup": r.matchup, "market": market_of[stat],
+                "selection": f"{r.player} {side.title()} {r.line:g} {label}", "player": r.player, "player_id": r.player_id,
+                "line": float(r.line), "price": float(got[1]), "book": cfg["books"]["primary"],
+                "units": float(acfg.get("units", 1.0)), "signals": [], "tracking": 1, "source": "angle",
+                "rationale": f"**ANGLE LAB - tracking only, not a bet.** Matchup: {note}",
+            })
+    return out
+
+
+def _matchup_context(mfac, player_id, stat, side) -> list[str]:
+    pro, con = matchups.for_bet(mfac, player_id, stat, side)
+    out = []
+    if pro:
+        out.append(f"Matchup: {len(pro)} factor(s) behind this bet - " + "; ".join(f["note"] for f in pro))
+    if con:
+        out.append("Matchup: against this bet - " + "; ".join(f["note"] for f in con))
+    return out
 
 
 def _market_summaries(c, p, g, row) -> tuple[str, str | None]:
@@ -361,7 +479,23 @@ def run_nfl(run_id, cfg, log, now, include_props) -> int:
             gg["spread_line_dk"] = -row["dk_spread_home"]
         return out + trends.situations(sched, gg)
 
-    n = _game_rows("nfl", run_id, up, projs, odds, cfg, log, match_event, name_of, trend_fn)
+    try:
+        angle_t = angles.team_table(sched, wind={gid: w["wind_mph"] for gid, w in wx.items()})
+    except Exception as e:
+        log(f"angle lab unavailable: {e}")
+        angle_t = None
+
+    def angle_fn(g, row):
+        if angle_t is None:
+            return []
+        try:
+            sp = row.get("dk_spread_home")
+            return angles.fire_game(angle_t, g["game_id"], None if sp is None else -sp, row.get("dk_total"))
+        except Exception as e:  # research layer: never blocks the card
+            log(f"angles failed for {g['game_id']}: {e}")
+            return []
+
+    n = _game_rows("nfl", run_id, up, projs, odds, cfg, log, match_event, name_of, trend_fn, angle_fn)
 
     if include_props:
         n += _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps)
@@ -377,6 +511,17 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
     plays = nflverse.pbp([season])
     pproj = nfl_props.project_players(ps, plays, season, week, tp, out_ids)
     log(f"Player projections: {len(pproj)} players ({len(out_ids)} ruled out/doubtful removed)")
+    opp_of = {**dict(zip(projs["home"], projs["away"])), **dict(zip(projs["away"], projs["home"]))}
+    try:
+        mfac = matchups.build(season, week, ps, opp_of, out_ids)
+    except Exception as e:
+        log(f"matchup factors unavailable: {e}")
+        mfac = pd.DataFrame(columns=["player_id", "key", "stats", "direction", "note"])
+    if not pproj.empty:
+        pproj["matchup_notes"] = pproj["player_id"].map(matchups.notes_by_player(mfac))
+        pproj["matchup_up"] = pproj["player_id"].map(matchups.notes_by_player(mfac[mfac["direction"] > 0]))
+    if not mfac.empty:
+        log(f"Matchup factors: {len(mfac)} ({', '.join(f'{k} {v}' for k, v in mfac['key'].value_counts().items())})")
     db.save_board(run_id, "nfl", "projections_players", pproj)
     if odds.empty or pproj.empty:
         return 0
@@ -437,13 +582,20 @@ def _run_nfl_props(run_id, cfg, log, season, week, up, projs, odds, ps) -> int:
                  + (f"{r['model_prob']:.0%} to score ({r['projection']:.2f} expected TDs)" if is_td
                     else f"{r['projection']:.1f} {label}"))
         p = _finalize_pick(p, blind, f"{sel} {fmt_american(r['price'])}", None,
-                           [f"Market consensus from {r['books']} book(s)"])
+                           [f"Market consensus from {r['books']} book(s)"]
+                           + ([] if is_td else _matchup_context(mfac, r["player_id"], r["stat"], r["side"])))
         db.upsert_pick(p)
         n += 1
+    ev["game_id"] = ev["event_id"].map(gid_by_event)
+    ev["matchup_notes"] = ev["player_id"].map(matchups.notes_by_player(mfac))
+    shadow = _matchup_picks(run_id, mfac, props, ev[ev["stat"] != "anytime_td"], cfg, existing_all)
+    for p in shadow:
+        db.upsert_pick(p)
+    if shadow:
+        log(f"Angle lab: {len(shadow)} matchup shadow picks")
     db.save_board(run_id, "nfl", "props", ev[ev["stat"] != "anytime_td"])
     db.save_board(run_id, "nfl", "attd", ev[ev["stat"] == "anytime_td"])
     if cfg["props"].get("ladder", {}).get("enabled", True):
-        ev["game_id"] = ev["event_id"].map(gid_by_event)
         _build_ladders(run_id, cfg, log, season, week, odds, ev, pproj, props)
     log(f"Props: {int(ev['qualifies'].sum())} plays ({int((ev['qualifies'] & (ev['stat'] == 'anytime_td')).sum())} TD Zone)")
     return n

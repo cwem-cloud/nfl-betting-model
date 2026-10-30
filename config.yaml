@@ -138,6 +138,12 @@ props:
     alt_hold: 0.07            # margin stripped from DK's one-sided alt prices before re-pricing
     template: [2.0, 1.5, 1.0, 0.5, 0.25]   # ladder builder: units on the main line, then each next rung
 
+angles:                       # angle lab: situational angles + matchup factors, shadow-tracked (never bet)
+  enabled: true
+  units: 1.0                  # flat stake each shadow pick is graded at
+  proven: [west_early, blowout_bounce, vs_rested_home, east_late_west, wind_under]  # held up 2010-19 AND 2020-25
+  promote_min_n: 30           # live shadow picks before an angle can be called ready for the card
+
 capper:                       # the reasoning capper (Claude): its own reads and picks, its own record
   enabled: true               # needs the ANTHROPIC_API_KEY secret
   window_hours: 24            # read games kicking off within this window (late = fresher news)

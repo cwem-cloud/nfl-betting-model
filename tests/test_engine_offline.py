@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
+from pocket_capper.settings import config
+
 import fake_market
 from pocket_capper.data import nflverse, odds_api, splits, weather
 from pocket_capper.engine import grading, slate
@@ -74,6 +76,8 @@ def test_full_run_and_grade(tmp_db, monkeypatch):
     assert ang["pick_id"].str.contains("|angle-", regex=False).all()
     picks = all_picks[~tmp_db.off_book(all_picks)]
     assert len(picks) > 0, "synthetic market should yield at least one edge"
+    assert set(picks["book"]) <= set(config()["books"]["mine"])  # line shopping: always one of our books
+    assert tmp_db.latest_board("nfl", "arbs")[1] is not None
     for p in picks.itertuples():
         assert 0.5 <= p.units <= 3.0
         assert p.ev >= 0.025

@@ -1,10 +1,16 @@
 # Pocket Capper configuration. Everything tunable lives here.
 
+rules:                        # PROD rules version: change only through the promotion gate (see docs/PROD_AND_LAB.md)
+  version: "2026-10-30"       # line shopping on, NFL totals tracking-only, NBA removed
+  frozen_through_week: 12     # no rule changes to the card before then: a clean sample to judge CLV on
+
 books:
   primary: draftkings            # the book picks are priced/graded against
   # Odds API bookmaker keys. <=10 books costs the same as 1 region.
   compare: [draftkings, fanduel, betmgm, williamhill_us, espnbet, betrivers, fanatics, pinnacle, lowvig, betonlineag]
   sharp: [pinnacle, lowvig, betonlineag]   # used as the "sharp" fair-price reference
+  mine: [draftkings, fanduel, betmgm, fanatics]   # books we can bet: every pick takes the best price among these
+  max_shop_gap: 0.06          # ignore a book's price this much (implied prob) better than DK's: stale / bad data
 
 sports:
   nfl:
@@ -41,9 +47,9 @@ sports:
     total_shrink: 0.87
     margin_stretch: 1.0           # slope fit said 1.12, but it hurt ATS out-of-sample (47.4% -> 44.9% at 3+ pts); left off
     primetime_total: -1.15
-  nba:                        # no quant model yet: the capper handicaps NBA from the market + its own research
-    odds_key: basketball_nba
-    lookahead_hours: 36
+    # Totals: 2-8 (-9.1U) live and the model's weakest market, so tracked (sized as if bet, never bet)
+    # until the shadow record and CLV earn them back. Switched off 2026-10-30.
+    markets: [spread, ml]
   cfb:
     odds_key: americanfootball_ncaaf
     decay_half_life_weeks: 6
@@ -157,10 +163,6 @@ capper:                       # the reasoning capper (Claude): its own reads and
   notebook_every: 6           # rewrite its notebook after this many newly graded picks
   backend: auto               # auto = API key if set, else subscription token (CLAUDE_CODE_OAUTH_TOKEN) via Agent SDK
   sdk_max_turns: 16
-  nba:                        # per-sport overrides
-    window_hours: 12          # same-day games only (late injury news)
-    max_picks_per_game: 2
-    units_per_day: 3.0
 
 run:
   lookahead_days: 7

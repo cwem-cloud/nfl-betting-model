@@ -48,12 +48,22 @@ def grade_side(market: str, side: str, line: float | None, hp: float, ap: float)
     return ("win" if v > 0 else "loss" if v < 0 else "push"), v
 
 
-def closing_price(sport: str, event_id: str, market: str, side: str, kickoff: str, player: str | None = None):
-    """Last primary-book snapshot at or before kickoff."""
+def closing_price(sport: str, event_id: str, market: str, side: str, kickoff: str, player: str | None = None,
+                  book: str | None = None):
+    """Last snapshot at or before kickoff at the book the pick was bet at (falls back to the primary book)."""
+    primary = config()["books"]["primary"]
+    if book and book != primary:
+        c = _closing_price(sport, event_id, market, side, kickoff, player, book)
+        if c is not None:
+            return c
+    return _closing_price(sport, event_id, market, side, kickoff, player, primary)
+
+
+def _closing_price(sport, event_id, market, side, kickoff, player, book):
     if not event_id:
         return None
     where = "WHERE sport = :s AND event_id = :e AND market = :m AND side = :side AND book = :b"
-    params = {"s": sport, "e": event_id, "m": market, "side": side, "b": config()["books"]["primary"]}
+    params = {"s": sport, "e": event_id, "m": market, "side": side, "b": book}
     if player:
         where += " AND player = :p"
         params["p"] = player
@@ -79,7 +89,6 @@ def grade_all(log=print) -> dict:
                    for k in picks.loc[picks["sport"] == "cfb", "kickoff"].dropna()}
     res_cfb = _results_cfb(cfb_seasons) if cfb_seasons and secret("CFBD_API_KEY") else pd.DataFrame()
     ps = pd.DataFrame()
-    nba_cache: dict = {}
     for p in picks.itertuples():
         kickoff = pd.to_datetime(p.kickoff, utc=True, errors="coerce", format="ISO8601")
         side = p.pick_id.split("|")[3]
@@ -87,7 +96,8 @@ def grade_all(log=print) -> dict:
         # (alt-line rungs have no closing line of their own: the main market closes at a different number)
         if pd.notna(kickoff) and kickoff <= now and pd.isna(p.close_price) and "|capper-alt@" not in p.pick_id:
             c = closing_price(p.sport, p.event_id, p.market if p.category not in ("prop", "attd") else p.market,
-                              side, p.kickoff, p.player if p.category in ("prop", "attd") else None)
+                              side, p.kickoff, p.player if p.category in ("prop", "attd") else None,
+                              p.book if isinstance(p.book, str) else None)
             if c is not None:
                 clv_pts = None
                 if pd.notna(p.line) and pd.notna(c["point"]):
@@ -97,15 +107,10 @@ def grade_all(log=print) -> dict:
                                clv_prob=om.american_to_prob(c["price"]) - om.american_to_prob(p.price))
                 stats["clv_recorded"] += 1
         # results
-        if p.sport == "nba":
-            got = _nba_result(p, side, kickoff, now, nba_cache)
-            if got is None:
-                continue
-            status, v = got
-            if status == "void":
-                db.update_pick(p.pick_id, status="void", profit_units=0.0)
-                continue
-        elif p.category in ("side", "total", "ml"):
+        if p.sport not in ("nfl", "cfb"):  # sports we no longer run (NBA was removed)
+            db.update_pick(p.pick_id, status="void", profit_units=0.0)
+            continue
+        if p.category in ("side", "total", "ml"):
             res = res_nfl if p.sport == "nfl" else res_cfb
             if res.empty:
                 continue
@@ -170,34 +175,6 @@ def grade_ladders(res_nfl: pd.DataFrame, now) -> int:
         db.update_ladder(r.id, status="win" if profit > 0 else "loss", result_value=v, profit_units=profit)
         n += 1
     return n
-
-
-def _nba_result(p, side: str, kickoff, now, cache: dict):
-    """(status, value) for a finished NBA pick, ("void", None) if the player didn't play, None if not final yet."""
-    from pocket_capper.data import nba
-    from pocket_capper.data.teams import norm_player
-
-    if pd.isna(kickoff) or kickoff > now - pd.Timedelta(hours=2):
-        return None
-    date, away, home = str(p.game_id).split("_")
-    try:
-        sb = cache.setdefault(("sb", date), nba.scoreboard(date))
-    except Exception:
-        return None
-    ev = next((e for e in sb if e["away"] == away and e["home"] == home), None)
-    if ev is None or not ev["completed"]:
-        return None
-    if p.category in ("side", "total", "ml"):
-        return grade_side(p.market, side, p.line, ev["home_pts"], ev["away_pts"])
-    try:
-        box = cache.setdefault(("box", ev["espn_id"]), nba.box_score(ev["espn_id"]))
-    except Exception:
-        return None
-    row = box[box["key"] == norm_player(p.player)] if not box.empty else box
-    if row.empty:
-        return "void", None
-    v = nba.stat_value(p.market, row.iloc[0])
-    return ("win" if ((v > p.line) if side == "over" else (v < p.line)) else "loss"), v
 
 
 def grade_sharp_plays(res_nfl: pd.DataFrame, res_cfb: pd.DataFrame) -> None:

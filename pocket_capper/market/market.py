@@ -25,6 +25,26 @@ def book_line(board: pd.DataFrame, event_id: str, book: str, market: str) -> dic
     return {r.side: (r.point, r.price) for r in b.itertuples()}
 
 
+BOOK_NAME = {"draftkings": "DK", "fanduel": "FanDuel", "betmgm": "BetMGM", "fanatics": "Fanatics",
+             "williamhill_us": "Caesars", "espnbet": "ESPN BET", "betrivers": "BetRivers"}
+
+
+def shop(rows: pd.DataFrame, books: list[str], point=None, ref_price=None, max_gap: float = 0.06):
+    """Best (book, price) among `books` for one side of one market, at exactly `point` (None for moneylines).
+    rows: board rows for that event/market/side (any books). A price more than `max_gap` of implied probability
+    better than the reference book's is treated as stale or bad data and skipped."""
+    r = rows[rows["book"].isin(books) & rows["price"].notna()]
+    if point is not None and "point" in r:
+        r = r[r["point"] == point]
+    best = None
+    for x in r.itertuples():
+        if ref_price is not None and om.american_to_prob(ref_price) - om.american_to_prob(x.price) > max_gap:
+            continue
+        if best is None or om.american_to_decimal(x.price) > om.american_to_decimal(best[1]):
+            best = (x.book, float(x.price))
+    return best
+
+
 def sharp_fair_margin(board: pd.DataFrame, event_id: str, sharp_books: list[str], sigma: float, sport: str) -> float | None:
     """Market-implied home margin from sharp books (de-vigged spread, price-adjusted).
 

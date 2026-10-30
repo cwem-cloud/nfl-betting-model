@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from pocket_capper import db
+from pocket_capper.market.market import BOOK_NAME
 from pocket_capper.market.odds_math import fmt_american
 from pocket_capper.models import angles
 from pocket_capper.settings import config, secret
@@ -144,7 +145,7 @@ def pick_card(p: pd.Series) -> None:
         f"""<div class='pc-card'>
 <span class='pc-sel'>{p['selection']} {fmt_american(p['price'])}</span><span class='pc-u'>{p['units']:g}U</span>
 <div class='pc-meta'>{p['matchup']} · {kick}
- · DK · EV {p['ev']:+.1%} · win {p['final_prob']:.1%}{usd}{moved}</div>{health}{chips}</div>""",
+ · <b>{BOOK_NAME.get(p.get('book') if isinstance(p.get('book'), str) else 'draftkings', p.get('book'))}</b> · EV {p['ev']:+.1%} · win {p['final_prob']:.1%}{usd}{moved}</div>{health}{chips}</div>""",
         unsafe_allow_html=True,
     )
     with st.expander("Rationale"):
@@ -386,6 +387,22 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("📈 Line Market")
     sport = st.radio("Sport", ["nfl", "cfb"], horizontal=True, format_func=str.upper, key="lm_sport")
+    st.markdown("#### 💱 Arbs & middles across your books")
+    st.caption("Arb = both sides at a locked profit; middle = numbers far enough apart that one result wins both. "
+               "Stakes are for $100 total. These are usually stale prices that vanish within minutes, and books "
+               "limit accounts that arb them: check both prices live before betting.")
+    shown = False
+    for _name, _title in (("arbs", "Game lines"), ("prop_arbs", "Player props")):
+        ab, ab_at = db.latest_board(sport, _name)
+        if not ab.empty:
+            shown = True
+            st.markdown(f"**{_title}** (as of {ab_at})")
+            st.dataframe(pd.DataFrame({
+                "Type": ab["kind"], "Game": ab["matchup"], "Player": ab["player"], "Bet A": ab["a"], "Bet B": ab["b"],
+                "$ on A": ab["stake_a"], "$ on B": ab["stake_b"], "Result": ab["detail"],
+            }), hide_index=True, width="stretch")
+    if not shown:
+        st.caption("None on the last run.")
     board, _ = db.latest_board(sport, "games")
     if board.empty or "event_id" not in board or board["event_id"].isna().all():
         st.info("No market data yet - add ODDS_API_KEY and Run.")

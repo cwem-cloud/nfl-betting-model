@@ -8,18 +8,21 @@ from pocket_capper.settings import config, secret
 
 def build(p: dict) -> str:
     """p: pick dict with blind/market/signal context. Returns markdown bullets."""
+    from pocket_capper.market.market import BOOK_NAME
+
     lines = []
     cat = p["category"]
+    bk = BOOK_NAME.get(p.get("book") or "draftkings", p.get("book"))
     if cat in ("side", "total", "ml"):
         lines.append(
             f"**Blind handicap (no line):** {p['blind_summary']}"
         )
         lines.append(
-            f"**Market:** DK {p['dk_summary']} | sharp consensus {p.get('sharp_summary') or 'n/a'}"
+            f"**Market:** {bk} {p['dk_summary']} | sharp consensus {p.get('sharp_summary') or 'n/a'}"
         )
     else:
         lines.append(f"**Projection (no line):** {p['blind_summary']}")
-        lines.append(f"**Market:** DK {p['dk_summary']}")
+        lines.append(f"**Market:** {bk} {p['dk_summary']}")
     lines.append(
         f"**Probabilities:** model {p['model_prob']:.1%}, market {p['market_prob']:.1%} "
         f"-> blended {p['final_prob']:.1%} vs {p['breakeven']:.1%} break-even at {fmt_american(p['price'])}"

@@ -41,16 +41,8 @@ rusher, a slot receiver against a weak nickel, a defense that funnels production
 - Game script: a big favourite leaning on the run late, a trailing team throwing, pace, weather \
 (wind hurts deep passing and kicking more than rushing).
 - Spots: short weeks, travel, lookahead/letdown, division familiarity.""",
-    "nba": """- Availability: stars ruled out or questionable (NBA injury reports change up to tip-off; check the latest), \
-minutes restrictions after injury, load management on the second night of a back-to-back.
-- Usage redistribution: when a high-usage player sits, who absorbs shots, touches and assists (often the \
-secondary ball-handler and the starter promoted into his minutes); rotation changes from the latest games.
-- Matchups and pace: possessions per game for both teams, opponent defence by position (rim protection, \
-perimeter defence), rebounding gaps, three-point volume against teams that allow threes.
-- Blowout risk: big spreads cut starters' minutes in the fourth quarter (hurts overs on starters, helps bench).
-- Spots: back-to-backs, 3-in-4 nights, long road trips, altitude in Denver/Utah, revenge/rivalry games.""",
 }
-SPORT_NAME = {"nfl": "NFL", "nba": "NBA"}
+SPORT_NAME = {"nfl": "NFL"}
 NOTEBOOK_HEADER = "## Your notebook (lessons from your own graded picks)\n"
 
 
@@ -621,7 +613,7 @@ def run(run_id: str, cfg: dict, log=print, now=None, sport: str = "nfl") -> int:
     window = _window(cfg, sport, now)
     if window.empty:
         return 0
-    return (_run_nfl if sport == "nfl" else _run_nba)(brain, window, cfg, run_id, now, log)
+    return _run_nfl(brain, window, cfg, run_id, now, log) if sport == "nfl" else 0
 
 
 def _run_nfl(brain, window, cfg, run_id, now, log) -> int:
@@ -647,64 +639,4 @@ def _run_nfl(brain, window, cfg, run_id, now, log) -> int:
         dossier = build_dossier(g, offers, props[props["team"].isin([g["home"], g["away"]])] if not props.empty else props,
                                 ladder, pproj, ps, inj, snaps, def_out, model_picks, season, week)
         n += _process(brain, "nfl", g, offers, dossier, cfg, run_id, now, day_used, log)
-    return n
-
-
-# ---------------------------------------------------------------- NBA
-
-ALT_PRICE_RANGE = (-200, 1200)
-
-
-def nba_offers(g: dict, props: pd.DataFrame) -> list[dict]:
-    from pocket_capper.data import nba
-
-    offers = build_offers({**g, "event_id": None}, pd.DataFrame(), pd.DataFrame(), {})  # game lines only
-    if props.empty:
-        return offers
-    p = props[(props["event_id"] == g["event_id"]) & (props["book"] == "draftkings") & props["price"].notna()]
-    p = p.sort_values(["player", "market", "point"])
-    for r in p.itertuples():
-        alt = r.market.endswith("_alternate")
-        main = nba.main_market(r.market)
-        if main not in nba.STAT_LABEL or r.side not in ("over", "under") or (alt and r.side != "over"):
-            continue
-        if alt and not (ALT_PRICE_RANGE[0] <= r.price <= ALT_PRICE_RANGE[1]):
-            continue  # near-locks and lottery tickets are noise in the dossier
-        rung = f"{int(r.point + 0.5)}+ {nba.STAT_LABEL[main]} (alt)" if alt else f"{r.side.title()} {r.point:g} {nba.STAT_LABEL[main]}"
-        offers.append({"id": f"o{len(offers) + 1}", "kind": "ladder" if alt else "prop", "market": main, "side": r.side,
-                       "line": float(r.point), "price": float(r.price), "player": r.player,
-                       "player_id": nba.player_id(r.player), "label": f"{r.player} {rung}"})
-    return offers
-
-
-def nba_dossier(g: dict, offers: list[dict], injuries: dict) -> str:
-    L = [f"# {g['away_name']} ({g['away']}) @ {g['home_name']} ({g['home']}) - tip {g['kickoff']}", "",
-         "## Market",
-         f"DK: {g['home']} {g.get('dk_spread_home')} | total {g.get('dk_total')} | ML {g['home']} "
-         f"{fmt_american(g['dk_ml_home']) if pd.notna(g.get('dk_ml_home')) else 'n/a'} / {g['away']} "
-         f"{fmt_american(g['dk_ml_away']) if pd.notna(g.get('dk_ml_away')) else 'n/a'}",
-         f"Consensus across {g.get('books')} books: {g['home']} {g.get('consensus_spread_home')}, total {g.get('consensus_total')}"]
-    L += _line_history(g["event_id"])
-    for team in (g["away"], g["home"]):
-        L += ["", f"## {team} injury report (ESPN; confirm the latest yourself)"]
-        L += [f"- {x}" for x in injuries.get(team, [])] or ["- nothing listed"]
-    L += ["", "## Offers you may pick from (DK prices)"]
-    L += [f"{o['id']}: {o['label']} @ {fmt_american(o['price'])}" for o in offers]
-    return "\n".join(L)
-
-
-def _run_nba(brain, window, cfg, run_id, now, log) -> int:
-    from pocket_capper.data import nba
-
-    props, _ = db.latest_board("nba", "props")
-    try:
-        inj = nba.injuries()
-    except Exception as e:
-        log(f"NBA injuries unavailable: {e}")
-        inj = {}
-    day_used, n = _day_used("nba"), 0
-    for g in window.to_dict("records"):
-        offers = nba_offers(g, props)
-        if offers:
-            n += _process(brain, "nba", g, offers, nba_dossier(g, offers, inj), cfg, run_id, now, day_used, log)
     return n

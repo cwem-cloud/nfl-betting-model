@@ -59,3 +59,24 @@ picks, or is clearly losing live, goes back to tracking-only (as NFL totals did)
 - Prod changes at most once per freeze window, each with a written reason in `config.yaml`.
 - Every lab idea must be a rule that produces shadow picks; if it can't be graded, it can't be promoted.
 - Anything that hasn't produced a single graded pick in a month gets removed (NBA was removed on that basis).
+
+## When something fails: post-mortem, then new ideas (and the inverse)
+
+A demoted market isn't just parked. The lab asks why it failed, tests other ways at the same market,
+and tracks the inverse of every shadow bet (the scorecard's `Inverse` column, at -110), because an
+idea that loses reliably is an idea too.
+
+### NFL totals (demoted 2026-10-30, 2-8, -9.1U)
+
+- **The bets**: all 10 were 3.5-6.5 points off the sharp consensus (e.g. GB@TB: model 45 vs 39 with
+  Mayfield out), and 3 were against heavy steam (CHI@ATL 47.5 -> 51.5 against our under).
+- **The model**: walk-forward 2022-26 it hits 51-52% against the close at every gap size, with a
+  worse average miss than the closing total (10.3 vs 10.2). Its "edge" on totals was a big
+  disagreement times a small weight: no real signal, so 2-8 was a zero-edge process running cold.
+- **Its adjustments**: wind and dome adjustments help at the extremes (removing them drops 4.5+ gaps
+  to 46-47%); with everything removed it is 42%. They stay; the base totals number is the problem.
+- **The inverse**: fading the model is 48-49%: no edge that way either.
+- **New ideas in the lab** (`models/angles.py`): `hot_fade_under` (both teams' last 3 went 6+ over:
+  53% / 56%, fragile), `total_steam_over` / `total_steam_under` (follow a 2+ point move since open;
+  live only), alongside `wind_under` (proven), `prime_under` and `low_total_under` (recent only).
+  The model's own totals keep being tracked too, with their inverse.

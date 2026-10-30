@@ -631,7 +631,8 @@ with tabs[6]:
         st.dataframe(pd.DataFrame({
             "Angle": sc["angle"], "Kind": sc["kind"], "Status": sc["status"], "Live": sc["live"],
             "Win %": (sc["live_pct"] * 100).round(1), "Units": sc["units"], "ROI": (sc["roi"] * 100).round(1),
-            "CLV (prob)": (sc["clv_prob"] * 100).round(1), "Open": sc["open"],
+            "CLV (prob)": (sc["clv_prob"] * 100).round(1), "Inverse": sc["inverse"], "Inv U": sc["inv_units"],
+            "Open": sc["open"],
         }), hide_index=True, width="stretch")
         ak = pd.to_datetime(ang["kickoff"], utc=True, errors="coerce", format="ISO8601")
         ao = ang.assign(_k=ak, key=ang["pick_id"].map(angles.angle_key))

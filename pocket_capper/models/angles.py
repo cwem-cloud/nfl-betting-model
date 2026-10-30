@@ -56,6 +56,13 @@ ANGLES = [
           lambda t: t["prime"], "49.2% / 54.4% unders (recent only)"),
     Angle("low_total_under", "Total 38.5 or lower: under", "total", "under",
           lambda t: t["total_line"] <= 38.5, "45.8% / 60.2% unders (recent only)"),
+    Angle("hot_fade_under", "Both teams' last 3 went 6+ over the total: under", "total", "under",
+          lambda t: (t["l3_vs_total"] >= 6) & (t["opp_l3_vs_total"] >= 6),
+          "53.4% / 56.4% unders (fragile: 55%/62% at 7+, but the summed version shows nothing)"),
+    Angle("total_steam_over", "Total moved up 2+ since open: follow (over)", "total", "over",
+          lambda t: (t["total_line"] - t["open_total"]) >= 2, "live only (no opening lines in history)"),
+    Angle("total_steam_under", "Total moved down 2+ since open: follow (under)", "total", "under",
+          lambda t: (t["open_total"] - t["total_line"]) >= 2, "live only (no opening lines in history)"),
     Angle("div_dog_short", "Division underdog +3 to +6.5", "spread", "team",
           lambda t: (t["div"] == 1) & (t["fav_by"] <= -3) & (t["fav_by"] >= -6.5),
           "50.6% / 56.9% ATS (recent only)"),
@@ -101,6 +108,12 @@ def team_table(sched: pd.DataFrame, lines: dict | None = None, wind: dict | None
     t["prev_margin"] = t.groupby(["team", "season"])["margin"].shift()
     t["cover"] = np.sign(t["margin"] - t["fav_by"])
     t["over"] = np.sign(t["total"] - t["total_line"])
+    # how far this team's last 3 games landed from their closing totals (positive = shootouts)
+    t["l3_vs_total"] = t.assign(d=t["total"] - t["total_line"]).groupby(["team", "season"])["d"] \
+        .transform(lambda x: x.shift(1).rolling(3).mean())
+    t["opp_l3_vs_total"] = t.set_index(["game_id", "opp"]).index.map(
+        t.set_index(["game_id", "team"])["l3_vs_total"].to_dict())
+    t["open_total"] = np.nan  # live only: DK's opening total (history has closing lines only)
     return t.reset_index(drop=True)
 
 
@@ -183,7 +196,7 @@ def agreeing(fired: list[dict], market: str, side: str) -> tuple[list[dict], lis
             [f for f in fired if f["market"] == m and f["side"] == opp])
 
 
-def fire_game(t: pd.DataFrame, game_id: str, home_spread_line=None, total_line=None) -> list[dict]:
+def fire_game(t: pd.DataFrame, game_id: str, home_spread_line=None, total_line=None, open_total=None) -> list[dict]:
     """Angles for one game at today's numbers (home_spread_line = home's expected margin, i.e. -DK spread)."""
     g = t[t["game_id"] == game_id].copy()
     if g.empty:
@@ -192,6 +205,8 @@ def fire_game(t: pd.DataFrame, game_id: str, home_spread_line=None, total_line=N
         g["fav_by"] = np.where(g["side"] == "home", home_spread_line, -home_spread_line)
     if total_line is not None and np.isfinite(total_line):
         g["total_line"] = total_line
+    if open_total is not None and np.isfinite(open_total):
+        g["open_total"] = open_total
     return fire(g, [game_id]).get(game_id, [])
 
 
@@ -205,6 +220,7 @@ def angle_key(pick_id: str) -> str | None:
 def scorecard(picks: pd.DataFrame, cfg: dict, sched: pd.DataFrame | None = None) -> pd.DataFrame:
     """Every angle / matchup factor / stack: backtest (game angles), live shadow record, and a verdict.
     ready  = a candidate whose live record has earned a look for the card (enough picks, winning, not losing CLV)
+    inverse = the same picks faded, priced at -110: a losing angle whose inverse keeps winning is itself an idea
     fading = a proven angle losing live over a real sample (watch it, retire it if it keeps going)"""
     from pocket_capper.models import matchups
 
@@ -238,9 +254,12 @@ def scorecard(picks: pd.DataFrame, cfg: dict, sched: pd.DataFrame | None = None)
             elif status == "proven" and pct < 0.5:
                 status = "fading: watch"
         rows.append({"key": key, "angle": label, "kind": kind, "status": status,
-                     "backtest": "" if old is None else f"{old['pct']:.1%} / {new['pct']:.1%} (n {old['w'] + old['l']}/{new['w'] + new['l']})",
+                     "backtest": "live only" if old is None or old["w"] + old["l"] == 0 else
+                     f"{old['pct']:.1%} / {new['pct']:.1%} (n {old['w'] + old['l']}/{new['w'] + new['l']})",
                      "live": f"{w}-{l}" if w + l else "-", "live_pct": pct, "units": round(pl, 2),
                      "roi": pl / risk if risk else np.nan, "clv_prob": clv,
+                     # the other side of every shadow bet, at a standard -110 (we don't store its price)
+                     "inverse": f"{l}-{w}" if w + l else "-", "inv_units": round(l * 100 / 110 - w, 2) if w + l else np.nan,
                      "open": int((g["status"] == "pending").sum()) if not g.empty else 0})
     return pd.DataFrame(rows)
 

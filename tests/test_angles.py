@@ -111,3 +111,23 @@ def test_matchup_shadow_picks_use_dk_main_line():
     ids = {p["pick_id"] for p in picks}
     assert ids == {f"nfl|2030_06_LV_NYJ|player_receptions|over|w1|angle-{k}" for k in ("new_cb", "weak_cb", "mstack")}
     assert all(p["price"] == 120 and p["line"] == 5.5 and p["tracking"] == 1 for p in picks)
+
+
+def test_totals_lab_angles_and_inverse():
+    rows = []
+    for wk in range(1, 5):  # both teams' first three games fly 10 over their totals; week 4 they meet
+        for a_, h in (("LV", "DEN"), ("KC", "LAC")) if wk < 4 else (("LV", "KC"),):
+            rows.append(dict(season=2030, week=wk, game_type="REG", game_id=f"2030_0{wk}_{a_}_{h}",
+                             gameday=f"2030-09-{wk + 6:02d}", gametime="16:25", weekday="Sunday", away_team=a_,
+                             home_team=h, result=0 if wk < 4 else None, spread_line=0.0, total_line=44.0,
+                             home_score=27 if wk < 4 else None, away_score=27 if wk < 4 else None,
+                             away_rest=7, home_rest=7, div_game=0, roof="dome", wind=None))
+    t = angles.team_table(pd.DataFrame(rows).assign(gameday=lambda d: pd.to_datetime(d["gameday"])))
+    fired = {f["key"]: f["side"] for f in angles.fire_game(t, "2030_04_LV_KC", 0.0, 47.5, open_total=45.0)}
+    assert fired["hot_fade_under"] == "under" and fired["total_steam_over"] == "over"
+    assert "total_steam_under" not in fired
+    picks = pd.DataFrame([{"pick_id": f"nfl|g{i}|total|under|angle-hot_fade_under", "source": "angle",
+                           "status": "loss", "units": 1.0, "profit_units": -1.0, "clv_prob": None} for i in range(3)])
+    sc = angles.scorecard(picks, config()).set_index("key")
+    assert sc.loc["hot_fade_under", "live"] == "0-3" and sc.loc["hot_fade_under", "inverse"] == "3-0"
+    assert abs(sc.loc["hot_fade_under", "inv_units"] - 2.73) < 0.01

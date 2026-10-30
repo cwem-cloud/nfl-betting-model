@@ -510,7 +510,8 @@ def run_nfl(run_id, cfg, log, now, include_props) -> int:
             return []
         try:
             sp = row.get("dk_spread_home")
-            return angles.fire_game(angle_t, g["game_id"], None if sp is None else -sp, row.get("dk_total"))
+            return angles.fire_game(angle_t, g["game_id"], None if sp is None else -sp, row.get("dk_total"),
+                                    row.get("dk_open_total"))
         except Exception as e:  # research layer: never blocks the card
             log(f"angles failed for {g['game_id']}: {e}")
             return []

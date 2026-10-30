@@ -111,6 +111,10 @@ if len(trk):
     tg = trk[trk["status"].isin(["win", "loss", "push"])]
     c = clv_summary(trk)
     print(f"\n===== TRACKING ONLY, NOT BET ({len(trk)} picks, {len(tg)} graded) =====")
+    for (_sp, _mk), _g in tg.groupby(["sport", "market"]):
+        _w, _l = int((_g["status"] == "win").sum()), int((_g["status"] == "loss").sum())
+        print(f"  {_sp.upper()} {_mk}: {_w}-{_l} as tracked, {_g['profit_units'].sum():+.2f}U | "
+              f"inverse (faded, at -110, 1U each) {_l}-{_w}, {_l * 100 / 110 - _w:+.2f}U")
     print(f"record {(tg['status'] == 'win').sum()}-{(tg['status'] == 'loss').sum()}-{(tg['status'] == 'push').sum()}"
           f"  units if bet {tg['profit_units'].sum():+.2f}"
           + (f"  CLV pts {c['avg_pts']:+.2f}  beat close {c['beat']:.0%}" if c["n"] else ""))

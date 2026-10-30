@@ -68,7 +68,11 @@ def test_full_run_and_grade(tmp_db, monkeypatch):
     proj = tmp_db.read(tmp_db.projections)
     assert len(proj) == 4
 
-    picks = tmp_db.read(tmp_db.picks)
+    all_picks = tmp_db.read(tmp_db.picks)
+    ang = all_picks[all_picks["source"] == "angle"]
+    assert len(ang) > 0 and (ang["tracking"] == 1).all()  # angle lab: shadow-tracked, never on the card
+    assert ang["pick_id"].str.contains("|angle-", regex=False).all()
+    picks = all_picks[~tmp_db.off_book(all_picks)]
     assert len(picks) > 0, "synthetic market should yield at least one edge"
     for p in picks.itertuples():
         assert 0.5 <= p.units <= 3.0
@@ -77,7 +81,7 @@ def test_full_run_and_grade(tmp_db, monkeypatch):
 
     # re-running does not duplicate locked picks
     slate.run(("nfl",), include_props=False, now=NOW)
-    assert len(tmp_db.read(tmp_db.picks)) == len(picks)
+    assert len(tmp_db.read(tmp_db.picks)) == len(all_picks)
 
     # market flips hard against every open pick: no opposing plays get added, and the
     # open picks record the (now negative) current EV
@@ -87,7 +91,7 @@ def test_full_run_and_grade(tmp_db, monkeypatch):
     after = tmp_db.read(tmp_db.picks)
     for p in after.itertuples():
         assert not (slate._opposite_ids(p.pick_id) & set(after["pick_id"]))
-    assert after["latest_ev"].notna().all()
+    assert after.loc[~tmp_db.off_book(after), "latest_ev"].notna().all()
 
     # final scores arrive -> grading settles every pick
     done = sched.copy()
@@ -120,6 +124,7 @@ def test_daily_exposure_cap(tmp_db, monkeypatch):
     monkeypatch.setitem(config()["exposure"], "nfl_games_units_per_day", 1.0)
     slate.run(("nfl",), include_props=False, now=NOW)
     picks = tmp_db.read(tmp_db.picks)
+    picks = picks[~tmp_db.off_book(picks)]
     assert picks["units"].sum() <= 1.0 + 1e-9
 
 
@@ -248,6 +253,7 @@ def test_switched_off_markets_are_tracked_not_bet(tmp_db, monkeypatch):
     monkeypatch.setitem(config()["edges"], "max_ev_game", 1.0)
     slate.run(("nfl",), include_props=False, now=NOW)
     picks = tmp_db.read(tmp_db.picks)
+    picks = picks[picks["source"].fillna("") != "angle"]
     trk = picks[tmp_db.is_tracking(picks)]
     real = picks[~tmp_db.is_tracking(picks)]
     assert len(trk) > 0 and set(trk["market"]) <= {"spread", "ml"}
@@ -258,4 +264,5 @@ def test_switched_off_markets_are_tracked_not_bet(tmp_db, monkeypatch):
     assert not trk.groupby("game_id").size().gt(1).any()
     # the second run refreshes, it doesn't duplicate
     slate.run(("nfl",), include_props=False, now=NOW)
-    assert len(tmp_db.read(tmp_db.picks)) == len(picks)
+    again = tmp_db.read(tmp_db.picks)
+    assert len(again[again["source"].fillna("") != "angle"]) == len(picks)

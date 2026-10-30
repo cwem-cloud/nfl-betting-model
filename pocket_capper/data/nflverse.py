@@ -72,6 +72,19 @@ def snap_counts(season: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+DEF_COV_COLS = ["season", "week", "game_type", "team", "opponent", "pfr_player_name", "def_targets",
+                "def_completions_allowed", "def_yards_allowed", "def_receiving_td_allowed"]
+
+
+def def_coverage(season: int) -> pd.DataFrame:
+    """PFR advanced defense per player-game: targets / catches / yards allowed in coverage."""
+    try:
+        path = cached_download(f"{BASE}/pfr_advstats/advstats_week_def_{season}.parquet", f"nfl_defadv_{season}.parquet", 12)
+        return pd.read_parquet(path, columns=DEF_COV_COLS)
+    except Exception:
+        return pd.DataFrame(columns=DEF_COV_COLS)
+
+
 def injuries(season: int) -> pd.DataFrame:
     try:
         path = cached_download(f"{BASE}/injuries/injuries_{season}.parquet", f"nfl_inj_{season}.parquet", 3)

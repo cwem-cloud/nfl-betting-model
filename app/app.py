@@ -13,6 +13,7 @@ import streamlit as st
 
 from pocket_capper import db
 from pocket_capper.market.odds_math import fmt_american
+from pocket_capper.models import angles
 from pocket_capper.settings import config, secret
 
 st.set_page_config(page_title="Pocket Capper", page_icon="🏈", layout="wide")
@@ -136,6 +137,9 @@ def pick_card(p: pd.Series) -> None:
         elif p["latest_ev"] < p["ev"] / 2:
             health = f"<div class='pc-meta'>↘ Edge shrinking: {p['latest_ev']:+.1%} EV at the current number</div>"
     usd = f" · &#36;{p['units'] * UNIT_USD:,.0f}" if UNIT_USD else ""
+    n_ang = int(p.get("angles_behind") or 0) if pd.notna(p.get("angles_behind")) else 0
+    if n_ang:  # angle-lab angles / matchup factors backing the same bet (tracked, see History)
+        chips = f"<span class='pc-chip pos'>🔗 {n_ang} angle{'s' if n_ang > 1 else ''} behind it</span>" + chips
     st.markdown(
         f"""<div class='pc-card'>
 <span class='pc-sel'>{p['selection']} {fmt_american(p['price'])}</span><span class='pc-u'>{p['units']:g}U</span>
@@ -151,6 +155,7 @@ def pending_picks(sport: str, categories: tuple[str, ...], upcoming_only: bool =
     df = db.read(db.picks, "WHERE sport = :s AND status = 'pending'", {"s": sport})
     if df.empty:
         return df
+    df["angles_behind"] = angles.support(df)
     df = df[df["category"].isin(categories) & ~db.off_book(df)]
     if upcoming_only:  # kicked-off picks wait in History until graded
         df = df[pd.to_datetime(df["kickoff"], utc=True, errors="coerce", format="ISO8601") > pd.Timestamp.now(tz="UTC")]
@@ -510,7 +515,9 @@ with tabs[5]:
 with tabs[6]:
     st.subheader("📚 History")
     h = db.read(db.picks)
-    trk = h[db.is_tracking(h)] if not h.empty else h
+    ang = h[h["source"].fillna("") == "angle"] if not h.empty else h
+    all_picks = h
+    trk = h[db.is_tracking(h) & (h["source"].fillna("") != "angle")] if not h.empty else h
     h = h[~db.off_book(h)] if not h.empty else h
     if h.empty:
         st.info("No picks yet.")
@@ -598,6 +605,27 @@ with tabs[6]:
             "Price": ts["price"].map(fmt_american), "U (if bet)": ts["units"], "EV": (ts["ev"] * 100).round(1),
             "Close": ts["close_line"], "CLV pts": ts["clv_points"], "Status": ts["status"], "P/L": ts["profit_units"].round(2),
         }), hide_index=True, width="stretch")
+    if not ang.empty:
+        st.markdown("### 🧪 Angle lab (shadow-tracked, never bet)")
+        st.caption("Situational angles and player matchup factors, each logged at 1U on DK's line whenever it fires, "
+                   "plus 'stacks' when 2+ land on the same bet. An angle earns a spot on the card only after its live "
+                   "record holds up. Backtest = 2010-19 / 2020-25 against the closing line (52.4% breaks even).")
+        sc = angles.scorecard(all_picks, config())
+        st.dataframe(pd.DataFrame({
+            "Angle": sc["angle"], "Kind": sc["kind"], "Status": sc["status"], "Live": sc["live"],
+            "Win %": (sc["live_pct"] * 100).round(1), "Units": sc["units"], "ROI": (sc["roi"] * 100).round(1),
+            "CLV (prob)": (sc["clv_prob"] * 100).round(1), "Open": sc["open"],
+        }), hide_index=True, width="stretch")
+        ak = pd.to_datetime(ang["kickoff"], utc=True, errors="coerce", format="ISO8601")
+        ao = ang.assign(_k=ak, key=ang["pick_id"].map(angles.angle_key))
+        ao = ao[(ao["status"] == "pending") & (ao["_k"] > pd.Timestamp.now(tz="UTC"))].sort_values("_k")
+        if not ao.empty:
+            st.markdown("**This week**")
+            st.dataframe(pd.DataFrame({
+                "Kickoff": ao["_k"].dt.tz_convert("America/New_York").dt.strftime("%a %I:%M %p"), "Matchup": ao["matchup"],
+                "Bet": ao["selection"], "Price": ao["price"].map(fmt_american), "Angle": ao["key"],
+                "Why": ao["rationale"].fillna("").str.split(r"\*\* ", n=1, regex=True).str[-1],
+            }), hide_index=True, width="stretch")
 
 
 # ------------------------------------------------------------------ Capper

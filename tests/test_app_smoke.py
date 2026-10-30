@@ -27,6 +27,16 @@ def test_dashboard_renders(tmp_db):
     tmp_db.upsert_pick(dict(base, pick_id="nfl|g0|spread|away|", selection="BUF +3", kickoff="2025-01-01T18:00:00Z"))
     tmp_db.update_pick("nfl|g0|spread|away|", status="win", profit_units=0.91, clv_prob=0.02)
 
+    # angle lab: two angles behind the BUF +2.5 pick (one graded elsewhere), shown as a chip and on History
+    for k in ("west_early", "stack"):
+        tmp_db.upsert_pick(dict(base, pick_id=f"nfl|g1|spread|away|angle-{k}", selection="BUF +2.5", source="angle",
+                                tracking=1, kickoff="2030-01-01 18:00:00+00:00", ev=None, rationale="**ANGLE LAB - x** y"))
+    tmp_db.upsert_pick(dict(base, pick_id="nfl|g1|spread|away|angle-blowout_bounce", selection="BUF +2.5", source="angle",
+                            tracking=1, kickoff="2030-01-01 18:00:00+00:00", ev=None, rationale="**ANGLE LAB - x** y"))
+    tmp_db.upsert_pick(dict(base, pick_id="nfl|g0|spread|away|angle-west_early", selection="BUF +3", source="angle",
+                            tracking=1, kickoff="2025-01-01T18:00:00Z", ev=None, rationale="**ANGLE LAB - x** y"))
+    tmp_db.update_pick("nfl|g0|spread|away|angle-west_early", status="win", profit_units=0.91)
+
     # the capper's own picks, a game read and its notebook (Capper tab)
     tmp_db.upsert_pick(dict(base, pick_id="nfl|g1|player_receptions|over|p1|capper@2.5", category="prop",
                             market="player_receptions", selection="Josh Allen Over 2.5 Receptions", source="capper",
@@ -57,5 +67,7 @@ def test_dashboard_renders(tmp_db):
     assert not at.exception, at.exception
     text = " ".join(m.value for m in at.markdown)
     assert "BUF +2.5" in text
+    assert "2 angles behind it" in text  # stacks don't double count
+    assert "Angle lab" in text
     code = " ".join(c.value for c in at.code)
     assert "Josh Allen Over 0.5 Receptions" in code  # prop shows on the copyable card

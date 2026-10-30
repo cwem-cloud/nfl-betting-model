@@ -16,6 +16,11 @@ p = db.read(db.picks)
 print(f"TOTAL PICKS IN DB: {len(p)}")
 if p.empty:
     raise SystemExit
+from pocket_capper.models import angles as _angles
+
+p["angles_behind"] = _angles.support(p)  # open angle-lab shadow picks backing the same bet
+ang = p[p["source"].fillna("") == "angle"].copy()  # angle lab: shadow-tracked angles and matchup factors
+p = p[p["source"].fillna("") != "angle"]
 trk = p[db.is_tracking(p)].copy()  # switched-off markets, logged but not bet
 cap = p[db.is_capper(p)].copy()    # the reasoning capper's own picks (own record)
 p = p[~db.off_book(p)].copy()
@@ -52,7 +57,7 @@ now = pd.Timestamp.now(tz="America/New_York")
 allopen = p[(p["status"] == "pending") & (p["kick"] >= now)].sort_values("kick")
 print(f"\n===== ALL OPEN PICKS ({len(allopen)}, {allopen['units'].sum():g}U) =====")
 if not allopen.empty:
-    print(allopen[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev"]].to_string(index=False))
+    print(allopen[["kick", "sport", "category", "matchup", "selection", "price_s", "units", "ev", "angles_behind"]].to_string(index=False))
 # Re-check every open play at the CURRENT DK line/price (latest_* are refreshed on each run, with the
 # latest injuries). Only plays that would still qualify today stay on this card.
 edges = config()["edges"]
@@ -69,7 +74,7 @@ if not allopen.empty:
     ok &= ~((a["category"] == "attd") & (a["now_price"] > edges["max_attd_odds"]))
     live, gone = a[ok], a[~ok]
     print(f"\n===== CARD AT CURRENT LINES ({len(live)} still qualify, {live['units'].sum():g}U) =====")
-    cols = ["kick", "category", "matchup", "selection", "now_line", "now_price_s", "units", "edge_now_s"]
+    cols = ["kick", "category", "matchup", "selection", "now_line", "now_price_s", "units", "edge_now_s", "angles_behind"]
     for d in (live, gone):
         d["now_price_s"] = d["now_price"].map(fmt_american)
         d["edge_now_s"] = d["edge_now"].map(lambda x: "" if pd.isna(x) else f"{x:+.1%}")
@@ -84,7 +89,7 @@ if len(up):
     up["edge_now"] = up["latest_ev"].map(lambda x: "" if pd.isna(x) else f"{x:+.1%}")
     for (sport, cat), grp in up.sort_values(["sport", "category", "units", "ev"], ascending=[True, True, False, False]).groupby(["sport", "category"], sort=False):
         print(f"\n--- {sport.upper()} {cat} ---")
-        print(grp[["kick", "matchup", "selection", "price_s", "units", "ev", "final_prob", "edge_now"]].to_string(index=False))
+        print(grp[["kick", "matchup", "selection", "price_s", "units", "ev", "final_prob", "edge_now", "angles_behind"]].to_string(index=False))
     print("\nRATIONALES (top 12 by units)")
     for _, r in up.sort_values(["units", "ev"], ascending=False).head(12).iterrows():
         print(f"\n### {r['selection']} {r['price_s']} ({r['units']:g}U) - {r['matchup']}")
@@ -115,6 +120,34 @@ if len(cap):
         print(co[["kick", "matchup", "selection", "price_s", "units"]].to_string(index=False))
         for _, r in co.iterrows():
             print(f"\n### {r['selection']} {r['price_s']} ({r['units']:g}U) - {r['matchup']}\n{r['rationale']}")
+if len(ang):
+    from pocket_capper.data import nflverse as _nv
+
+    try:
+        _sched = _nv.schedules()
+    except Exception:
+        _sched = None
+    sc = _angles.scorecard(pd.concat([ang, p]), config(), _sched)
+    print(f"\n===== ANGLE LAB ({len(ang)} shadow picks, never bet; backtest = 2010-19 / 2020-25) =====")
+    sc["live_pct"] = sc["live_pct"].map(lambda x: "" if pd.isna(x) else f"{x:.1%}")
+    sc["roi"] = sc["roi"].map(lambda x: "" if pd.isna(x) else f"{x:+.1%}")
+    sc["clv_prob"] = sc["clv_prob"].map(lambda x: "" if pd.isna(x) else f"{x:+.1%}")
+    print(sc.drop(columns=["key"]).to_string(index=False))
+    ang["kick"] = pd.to_datetime(ang["kickoff"], utc=True, errors="coerce", format="ISO8601").dt.tz_convert("America/New_York")
+    ang["key"] = ang["pick_id"].map(_angles.angle_key)
+    ang["price_s"] = ang["price"].map(fmt_american)
+    ao = ang[(ang["status"] == "pending") & (ang["kick"] >= pd.Timestamp.now(tz="America/New_York"))]
+    st = ao[ao["key"].isin(["stack", "stack_proven", "mstack"])]
+    if len(st):
+        print("\n----- STACKS this week (2+ angles/factors on the same bet) -----")
+        for r in st.sort_values("kick").itertuples():
+            mine = p[(p["status"] == "pending") & (p["pick_id"].str.startswith(r.pick_id.rsplit("|", 1)[0]))]
+            print(f"{r.kick:%a %H:%M} {r.matchup}: {r.selection} {r.price_s} [{r.key}] {r.rationale.split('** ', 1)[-1]}"
+                  + (f"  << model has it: {', '.join(mine['selection'])}" if len(mine) else ""))
+    if len(ao):
+        print("\n----- open angle picks -----")
+        print(ao.sort_values(["kick", "matchup"])[["kick", "matchup", "selection", "price_s", "key"]].to_string(index=False))
+
 rv = db.read(db.capper_reviews)
 if len(rv):
     print("\n===== CAPPER GAME READS (latest) =====")

@@ -269,6 +269,8 @@ def build_dossier(game: dict, offers: list[dict], props: pd.DataFrame, ladder: p
           f"Adjustments: {g.get('notes') or 'none'}",
           f"Sharp-book consensus: {home} {g.get('sharp_spread_home')}, total {g.get('sharp_total')}",
           f"Model's lean: {g.get('lean')} | best play: {g.get('best_play')} | flags: {g.get('flag') or 'none'}"]
+    if g.get("angles") and not pd.isna(g.get("angles")):
+        L.append(f"Angle lab (backtested situational angles; tracked, not bet): {g['angles']}")
     if g.get("signals"):
         try:
             sig = json.loads(g["signals"]) if isinstance(g["signals"], str) else g["signals"]
@@ -294,6 +296,10 @@ def build_dossier(game: dict, offers: list[dict], props: pd.DataFrame, ladder: p
             sit = pproj[(pproj["team"] == team) & (pproj["situation"].fillna("") != "")]
             if not sit.empty:
                 L += ["Situations the model flagged:"] + [f"- {r.player}: {r.situation}" for r in sit.itertuples()]
+        if not pproj.empty and "matchup_notes" in pproj:
+            mu = pproj[(pproj["team"] == team) & (pproj["matchup_notes"].fillna("") != "")]
+            if not mu.empty:
+                L += ["Matchup factors (backtested; small tilts):"] + [f"- {r.player}: {r.matchup_notes}" for r in mu.itertuples()]
         if not props.empty:
             pt = props[props["team"] == team].sort_values("ev", ascending=False)
             if not pt.empty:

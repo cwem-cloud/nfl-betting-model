@@ -74,6 +74,10 @@ def build(props_eval: pd.DataFrame, alt: pd.DataFrame, proj: pd.DataFrame, def_o
     situation = {}
     if not proj.empty and "situation" in proj:
         situation = {r.player_id: r.situation for r in proj.itertuples() if isinstance(r.situation, str) and r.situation}
+    if not proj.empty and "matchup_up" in proj:  # matchup factors that favour the over (see models.matchups)
+        for r in proj.itertuples():
+            if isinstance(r.matchup_up, str) and r.matchup_up:
+                situation[r.player_id] = "; ".join(filter(None, [situation.get(r.player_id, ""), r.matchup_up]))
 
     dk_alt = {}
     if not alt.empty:

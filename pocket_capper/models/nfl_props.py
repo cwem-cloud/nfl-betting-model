@@ -35,6 +35,18 @@ SAME_POS_SHARE = 0.5
 RETURN_KEY_SHARE = 0.45      # lead back = at least this share of carries in the games he played
 RETURN_POSITIONS = {"RB"}     # WR rotations: fill-in work mostly sticks, no measurable instability
 UNSTABLE_ROLE = "unstable role"
+# Role shifts: a player whose share over the team's last 2 games moved this far from his recency-weighted
+# share (absolute, and relative) is mid depth-chart change (Dobbins losing carries to Coleman). The weighted
+# history lags those, so his props / TDs / ladders don't qualify, the same as a returning lead back.
+# Walk-forward 2024 / 2025, RB carries: flagged "growing" backs were under-projected by 1.4 / 3.9 carries,
+# "shrinking" ones over-projected by 1.0 / 2.3 (unflagged: -0.5 both years). WR/TE target shifts showed no
+# consistent bias, so only backs are watched.
+SHIFT_STAT = {"RB": 1}   # which share to watch: 0 = targets, 1 = carries
+SHIFT_ABS = {0: 0.08, 1: 0.15}
+SHIFT_REL = 0.35
+# Work left by a player who's already been missing is partly in his teammates' recent numbers: they inherit
+# only the part of his role that their weighted history doesn't already reflect.
+DISCOUNT_MISSED = True
 
 MARKET_STAT = {
     "player_pass_yds": "pass_yds", "player_pass_tds": "pass_tds", "player_pass_attempts": "pass_att",
@@ -155,11 +167,21 @@ def project_players(
         name_of = players.sort_values("week").groupby("player_id")["player_display_name"].last().to_dict()
         recent_ids = set(recent["player_id"])
         gone = [o for o in recent_ids & out_players if o in shares]
+        wk_w = dict(zip(tg["week"], _decay_weights(tg["weeks_ago"])))
+        tot_w = sum(wk_w.values()) or 1.0
+
+        def already_missing(o) -> float:
+            """Weight share of team games player o sat out (teammates' numbers already include those)."""
+            if not DISCOUNT_MISSED:
+                return 0.0
+            played = set(players.loc[players["player_id"] == o, "week"])
+            return sum(v for k, v in wk_w.items() if k not in played) / tot_w
         inherit = {pid: [0.0, 0.0] for pid in ids}
         notes = {pid: [] for pid in ids}
         for o in gone:
+            miss = already_missing(o)
             for j in (0, 1):
-                amt = shares[o][j]
+                amt = shares[o][j] * (1 - miss)
                 if amt <= 0:
                     continue
                 same = [p for p in ids if pos_of.get(p) == pos_of.get(o) and shares[p][j] > 0]
@@ -180,6 +202,26 @@ def project_players(
         scale_t = min(1.25, 1 / active_t) if active_t > 0 else 1
         scale_c = min(1.25, 1 / active_c) if active_c > 0 else 1
         team_last_week = int(tg["week"].max())
+        last2 = sorted(tg["week"])[-2:]
+        shift_notes = {}
+        if len(last2) == 2:
+            t2 = tg.set_index("week").loc[last2]
+            for pid in ids:
+                j = SHIFT_STAT.get(pos_now.get(pid))
+                if j is None or pid not in shares:
+                    continue
+                g2 = players[(players["player_id"] == pid) & players["week"].isin(last2)]
+                if len(g2) < 2:  # missed one of them: that's the returning/out logic, not a role shift
+                    continue
+                col, tcol = ("targets", "targets") if j == 0 else ("carries", "carries")
+                r2 = g2[col].fillna(0).sum() / max(t2[tcol].sum(), 1)
+                s0 = shares[pid][j]
+                what = "targets" if j == 0 else "carries"
+                if s0 - r2 >= SHIFT_ABS[j] and r2 <= s0 * (1 - SHIFT_REL):
+                    shift_notes[pid] = f"{UNSTABLE_ROLE}: role shrinking ({r2:.0%} of {what} last 2 games vs {s0:.0%})"
+                elif r2 - s0 >= SHIFT_ABS[j] and r2 >= s0 * (1 + SHIFT_REL) and inherit[pid][j] < 0.03:
+                    # (growth explained by a teammate who's out is already in the projection, not unstable)
+                    shift_notes[pid] = f"{UNSTABLE_ROLE}: role growing ({r2:.0%} of {what} last 2 games vs {s0:.0%})"
 
         team_td_tot = tg["rush_tds"].sum() + tg["rec_tds"].sum()
         for pid in ids:
@@ -191,7 +233,8 @@ def project_players(
             tshare, cshare = shares[pid]
             tshare = (tshare + inherit[pid][0]) * scale_t
             cshare = (cshare + inherit[pid][1]) * scale_c
-            situation = list(notes[pid]) + ([return_notes[pid]] if pid in return_notes else [])
+            situation = (list(notes[pid]) + ([return_notes[pid]] if pid in return_notes else [])
+                         + ([shift_notes[pid]] if pid in shift_notes else []))
             if int(grp["week"].max()) < team_last_week:
                 situation.append("returning: missed the last game (recent box scores understate his role)")
             tot_tgt, tot_car = grp["targets"].fillna(0).sum(), grp["carries"].fillna(0).sum()

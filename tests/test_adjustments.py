@@ -45,3 +45,28 @@ def test_ir_players_count_as_out(monkeypatch):
         {"week": 9, "gsis_id": "ps", "status": "DEV"}, {"week": 9, "gsis_id": "a", "status": "ACT"},
         {"week": 10, "gsis_id": "a", "status": "RES"}]))  # a future week never leaks back
     assert nfl_model.out_player_ids(2030, 9) == {"q", "ir"}
+
+
+def _rb_week(week, pid, name, carries, team="DEN"):
+    return {"player_id": pid, "player_display_name": name, "position": "RB", "season": 2030, "week": week,
+            "season_type": "REG", "team": team, "opponent_team": "KC", "completions": 0, "attempts": 0,
+            "passing_yards": 0, "passing_tds": 0, "carries": carries, "rushing_yards": carries * 4, "rushing_tds": 0,
+            "receptions": 1, "targets": 1, "receiving_yards": 5, "receiving_tds": 0, "target_share": 0.05}
+
+
+def test_rb_role_shift_is_flagged_unstable():
+    import pandas as pd
+
+    from pocket_capper.models import nfl_props
+
+    rows = []
+    for wk in range(1, 9):  # Dobbins-like lead back loses the job to a rookie over the last two games
+        lead, rook = (18, 4) if wk <= 6 else (6, 12)
+        rows += [_rb_week(wk, "lead", "Old Lead", lead), _rb_week(wk, "rook", "New Lead", rook),
+                 _rb_week(wk, "qb", "Quarterback", 4) | {"position": "QB", "attempts": 30}]
+    ps = pd.DataFrame(rows)
+    tp = pd.DataFrame([{"team": "DEN", "opp": "KC", "pts": 22.0, "margin": 0.0}])
+    pp = nfl_props.project_players(ps, pd.DataFrame(), 2030, 9, tp, set()).set_index("player")
+    assert "role shrinking" in pp.loc["Old Lead", "situation"] and nfl_props.UNSTABLE_ROLE in pp.loc["Old Lead", "situation"]
+    assert "role growing" in pp.loc["New Lead", "situation"]
+    assert "role" not in (pp.loc["Quarterback", "situation"] or "")

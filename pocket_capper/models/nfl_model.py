@@ -144,12 +144,25 @@ def defensive_absences(season: int, week: int, min_snap_pct: float = 0.6) -> dic
     return res
 
 
+ROSTER_OUT = {"RES", "CUT", "RET"}  # reserve (IR/PUP/NFI), released, retired
+
+
 def out_player_ids(season: int, week: int) -> set[str]:
+    """Players who won't play: ruled out on this week's injury report, or on IR / reserve / released per the
+    latest weekly roster. IR players drop off the injury report, so the report alone would treat a back on IR
+    as available (and "returning"), handing him carries that belong to his teammates."""
+    out: set[str] = set()
     inj = nflverse.injuries(season)
-    if inj.empty:
-        return set()
-    wk = inj[inj["week"] == week]
-    return set(wk[wk["report_status"].isin(OUT_STATUSES)]["gsis_id"])
+    if not inj.empty:
+        wk = inj[inj["week"] == week]
+        out |= set(wk[wk["report_status"].isin(OUT_STATUSES)]["gsis_id"])
+    ro = nflverse.weekly_rosters(season)
+    if not ro.empty:
+        ro = ro[ro["week"] <= week]
+        if not ro.empty:
+            latest = ro[ro["week"] == ro["week"].max()]
+            out |= set(latest[latest["status"].isin(ROSTER_OUT)]["gsis_id"].dropna())
+    return out
 
 
 def _is_primetime(g) -> bool:

@@ -85,6 +85,15 @@ def def_coverage(season: int) -> pd.DataFrame:
         return pd.DataFrame(columns=DEF_COV_COLS)
 
 
+def weekly_rosters(season: int) -> pd.DataFrame:
+    """Weekly roster status per player (ACT, RES = IR/PUP/NFI, CUT, RET, DEV = practice squad, ...)."""
+    try:
+        path = cached_download(f"{BASE}/weekly_rosters/roster_weekly_{season}.parquet", f"nfl_roster_weekly_{season}.parquet", 6)
+        return pd.read_parquet(path, columns=["season", "week", "team", "full_name", "position", "status", "gsis_id"])
+    except Exception:
+        return pd.DataFrame(columns=["season", "week", "team", "full_name", "position", "status", "gsis_id"])
+
+
 def injuries(season: int) -> pd.DataFrame:
     try:
         path = cached_download(f"{BASE}/injuries/injuries_{season}.parquet", f"nfl_inj_{season}.parquet", 3)

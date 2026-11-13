@@ -161,6 +161,13 @@ def project_players(
                     who.append(name_now.get(key, key))
             if skip:
                 return_notes[pid] = f"{UNSTABLE_ROLE}: {', '.join(who)} back at {pos_now.get(pid)}"
+        # The returning lead himself is just as unpredictable (how fast he's eased back in): walk-forward 2024/25
+        # his carries were under-projected by 1.1 / 0.8 (8.5 / 7 rush yds) with ~5 carries MAE vs ~3.3 for other
+        # backs (Skattebo projected 12 after missing weeks 6 and 9, line 16.5). His props don't qualify either.
+        team_last = int(tg["week"].max())
+        for key, missed in missed_by.items():
+            if missed and team_last in missed:
+                return_notes[key] = f"{UNSTABLE_ROLE}: returning lead back (missed the last game)"
         # Work left behind by OUT teammates goes mostly to the same position group (a lead RB's carries go
         # to the other backs, not spread across the whole offense), the rest across everyone active.
         pos_of = players.sort_values("week").groupby("player_id")["position"].last().to_dict()

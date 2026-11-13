@@ -70,3 +70,20 @@ def test_rb_role_shift_is_flagged_unstable():
     assert "role shrinking" in pp.loc["Old Lead", "situation"] and nfl_props.UNSTABLE_ROLE in pp.loc["Old Lead", "situation"]
     assert "role growing" in pp.loc["New Lead", "situation"]
     assert "role" not in (pp.loc["Quarterback", "situation"] or "")
+
+
+def test_returning_lead_back_is_flagged_himself():
+    import pandas as pd
+
+    from pocket_capper.models import nfl_props
+
+    rows = []
+    for wk in range(1, 9):  # lead back misses week 8; the backup starts in his place
+        if wk < 8:
+            rows.append(_rb_week(wk, "lead", "Lead Back", 18))
+        rows.append(_rb_week(wk, "bk", "Backup", 4 if wk < 8 else 20))
+        rows.append(_rb_week(wk, "qb", "Quarterback", 3) | {"position": "QB", "attempts": 30})
+    tp = pd.DataFrame([{"team": "DEN", "opp": "KC", "pts": 22.0, "margin": 0.0}])
+    pp = nfl_props.project_players(pd.DataFrame(rows), pd.DataFrame(), 2030, 9, tp, set()).set_index("player")
+    assert "returning lead back" in pp.loc["Lead Back", "situation"]
+    assert "Lead Back back at RB" in pp.loc["Backup", "situation"]
